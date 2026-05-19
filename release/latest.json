@@ -1,7 +1,7 @@
 {
-  "version": "0.1.1",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.1.1/Matador-0.1.1.dmg",
-  "notes": "Modern minimalist redesign: brand-coloured pill state tabs, refined sidebar with material card, hero disconnected/connecting states, accent-barred sections in job detail, polished status bar. Fixes blank-window state when no Redis or no queues are present.",
+  "version": "0.1.2",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.1.2/Matador-0.1.2.dmg",
+  "notes": "Fixes a crash on first connect — RESP parser was relying on Data.removeFirst resetting startIndex, which it doesn't. Parser buffer is now [UInt8] which is always 0-based.",
   "minOS": "14.0",
   "date": "2026-05-19"
 }
