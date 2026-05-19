@@ -49,8 +49,8 @@ final class Installer {
 
             try spawnSwapHelper(stagedApp: staged)
             phase = .relaunching
-            // Give the helper a beat to start polling before we exit.
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            // Terminate immediately — the helper is already polling for our PID
+            // to disappear and will swap+launch the moment we're gone.
             NSApplication.shared.terminate(nil)
         } catch {
             phase = .failed(error.localizedDescription)
@@ -58,49 +58,46 @@ final class Installer {
     }
 
     // MARK: Download
+    //
+    // URLSessionDownloadDelegate gives us native chunked transfers + progress
+    // callbacks from the system networking stack — no per-byte async overhead.
 
     private func downloadDMG(version: String, from url: URL) async throws -> URL {
         let dest = FileManager.default.temporaryDirectory
             .appendingPathComponent("Matador-\(version)-\(UUID().uuidString).dmg")
         try? FileManager.default.removeItem(at: dest)
-        FileManager.default.createFile(atPath: dest.path, contents: nil)
-        guard let handle = FileHandle(forWritingAtPath: dest.path) else {
-            throw InstallerError.io("Could not open temp file for writing")
-        }
-        defer { try? handle.close() }
 
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw InstallerError.io("HTTP \(http.statusCode) downloading DMG")
-        }
-        let total = max(response.expectedContentLength, 0)
 
-        var buffer = Data()
-        buffer.reserveCapacity(64 * 1024)
-        var written: Int64 = 0
-        var lastEmit: TimeInterval = 0
-        for try await byte in asyncBytes {
-            buffer.append(byte)
-            if buffer.count >= 64 * 1024 {
-                try handle.write(contentsOf: buffer)
-                written += Int64(buffer.count)
-                buffer.removeAll(keepingCapacity: true)
-                // Emit progress at most every 50ms to avoid flooding the UI
-                let now = ProcessInfo.processInfo.systemUptime
-                if now - lastEmit > 0.05 {
-                    lastEmit = now
-                    let progress = total > 0 ? Double(written) / Double(total) : 0
-                    self.phase = .downloading(progress: progress, bytesDone: written, bytesTotal: total)
-                }
+        let delegate = DownloadProgressDelegate { [weak self] done, total in
+            guard let self = self else { return }
+            // Apple already throttles delegate callbacks to roughly per-chunk
+            // boundaries, but cap UI churn anyway.
+            Task { @MainActor in
+                let progress = total > 0 ? Double(done) / Double(total) : 0
+                self.phase = .downloading(progress: progress, bytesDone: done, bytesTotal: total)
             }
         }
-        if !buffer.isEmpty {
-            try handle.write(contentsOf: buffer)
-            written += Int64(buffer.count)
+        let config = URLSessionConfiguration.ephemeral
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        config.timeoutIntervalForResource = 120
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+
+        let tempURL = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<URL, Error>) in
+            delegate.onFinish = { result in
+                switch result {
+                case .success(let url): cont.resume(returning: url)
+                case .failure(let err): cont.resume(throwing: err)
+                }
+            }
+            let task = session.downloadTask(with: request)
+            task.resume()
         }
-        self.phase = .downloading(progress: 1, bytesDone: written, bytesTotal: max(total, written))
+
+        // Move out of system-managed temp before the delegate's location dies.
+        try FileManager.default.moveItem(at: tempURL, to: dest)
         return dest
     }
 
@@ -180,20 +177,20 @@ final class Installer {
         LOG="\#(logPath)"
         echo "[$(date)] swap helper start pid=\#(pid)" >> "$LOG"
 
-        # Wait up to 30s for the parent app to exit.
-        for i in $(seq 1 300); do
+        # Tighter poll: 50ms × 600 iters = 30s ceiling. Typical exit is well
+        # under 200ms after NSApplication.terminate runs the teardown.
+        for i in $(seq 1 600); do
             if ! kill -0 \#(pid) 2>/dev/null; then
                 break
             fi
-            sleep 0.1
+            /bin/sleep 0.05
         done
         if kill -0 \#(pid) 2>/dev/null; then
             echo "[$(date)] parent still alive after 30s, force-killing" >> "$LOG"
             kill -9 \#(pid) 2>/dev/null || true
-            sleep 0.3
+            /bin/sleep 0.2
         fi
 
-        # Move out of the way, swap in, strip quarantine, launch.
         if [ -d "\#(destApp)" ]; then
             rm -rf "\#(destApp)" >> "$LOG" 2>&1
         fi
@@ -201,7 +198,6 @@ final class Installer {
         /usr/bin/xattr -cr "\#(destApp)" >> "$LOG" 2>&1 || true
         echo "[$(date)] launching new app" >> "$LOG"
         /usr/bin/open "\#(destApp)" >> "$LOG" 2>&1
-        # Best-effort self-clean.
         rm -f "$0"
         """#
 
@@ -232,6 +228,60 @@ enum InstallerError: LocalizedError {
         case .io(let m): return m
         case .mount(let m): return m
         case .stage(let m): return m
+        }
+    }
+}
+
+// MARK: - URLSessionDownloadDelegate wrapper
+
+final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    /// Called from the URLSession delegate queue (background) — caller is
+    /// responsible for hopping back to the main actor.
+    let onProgress: (Int64, Int64) -> Void
+    /// One-shot terminal callback. On success the URL is the system-managed
+    /// temp file — the caller has to move it before the delegate returns.
+    var onFinish: ((Result<URL, Error>) -> Void)?
+
+    private var movedDest: URL?
+
+    init(onProgress: @escaping (Int64, Int64) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        onProgress(totalBytesWritten, totalBytesExpectedToWrite)
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        // The downloaded file is at `location`. We must move it before this
+        // method returns or the system will delete it.
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("matador-dl-\(UUID().uuidString).dmg")
+        do {
+            try FileManager.default.moveItem(at: location, to: staging)
+            movedDest = staging
+        } catch {
+            onFinish?(.failure(error))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            onFinish?(.failure(error))
+            return
+        }
+        if let http = task.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            onFinish?(.failure(InstallerError.io("HTTP \(http.statusCode) downloading DMG")))
+            return
+        }
+        if let url = movedDest {
+            onFinish?(.success(url))
+        } else {
+            onFinish?(.failure(InstallerError.io("Download finished with no file")))
         }
     }
 }
