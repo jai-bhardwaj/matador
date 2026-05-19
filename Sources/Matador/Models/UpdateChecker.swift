@@ -18,9 +18,16 @@ final class UpdateChecker {
     var error: String?
 
     func checkForUpdates() async {
-        guard let url = URL(string: AppConstants.updateManifestURL) else { return }
+        guard var components = URLComponents(string: AppConstants.updateManifestURL) else { return }
+        // Cache-bust raw.githubusercontent.com which caches aggressively.
+        components.queryItems = (components.queryItems ?? []) + [
+            URLQueryItem(name: "ts", value: String(Int(Date().timeIntervalSince1970)))
+        ]
+        guard let url = components.url else { return }
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.data(for: request)
             let manifest = try JSONDecoder().decode(Manifest.self, from: data)
             self.latest = manifest
             self.available = isNewer(manifest.version, than: AppConstants.version)
