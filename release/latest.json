@@ -1,7 +1,7 @@
 {
-  "version": "0.2.2",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.2/Matador-0.2.2.dmg",
-  "notes": "Responsive layout fix: metric stat tiles and mode switcher were breaking horribly at narrow column widths (vertical text, mid-digit number wrap, label hyphenation). Tiles now flow into an adaptive grid; mode switcher collapses to icons; every text label uses single-line truncation with fixedSize.",
+  "version": "0.2.3",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.3/Matador-0.2.3.dmg",
+  "notes": "Production-grade connect lifecycle. Fixes: (1) profile switching dead while connecting — now uses generation-tagged tasks so newer attempts cleanly supersede older ones; (2) connections to kubectl port-forwarded Redis hanging silently — auto-normalize 'localhost' to '127.0.0.1' to dodge NWConnection's IPv6-first Happy Eyeballs that hangs on the kubectl IPv4-only bind; (3) inscrutable connection errors — NWError now maps to actionable messages ('connection refused at 127.0.0.1:10000 — is Redis listening?', 'TLS handshake failed — uncheck TLS if Redis isn't rediss://', etc.); (4) 75s OS timeout replaced with 10s hard cap; (5) Cancel button + Switch profile menu now visible mid-connect.",
   "minOS": "14.0",
-  "date": "2026-05-19"
+  "date": "2026-05-20"
 }
