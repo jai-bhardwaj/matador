@@ -1,7 +1,7 @@
 {
-  "version": "0.2.7",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.7/Matador-0.2.7.dmg",
-  "notes": "Installer perf: rewrote the DMG downloader to use URLSessionDownloadDelegate instead of URLSession.bytes(for:). The previous version was yielding one byte at a time through Swift's async machinery (2M+ async yields for a 2MB DMG) — most of the install time was async overhead, not network. Now uses native chunked transfers. Helper poll tightened from 100ms to 50ms; removed an unnecessary 250ms pre-terminate sleep.",
+  "version": "0.2.8",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.8/Matador-0.2.8.dmg",
+  "notes": "Profile editor upgrade: (1) TLS now has 'Auto' mode that probes TLS first then falls back to plain TCP — same UX as RedisInsight, no more 'TLS handshake failed' surprises. (2) Paste a redis:// or rediss:// connection URL at the top of the profile editor and every field auto-fills. (3) New 'Test Connection' button runs the real connect path + BullMQ queue scan against the form values without saving, so you can iterate on settings before committing.",
   "minOS": "14.0",
   "date": "2026-05-20"
 }
