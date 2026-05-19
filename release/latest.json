@@ -1,7 +1,7 @@
 {
-  "version": "0.2.0",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.0/Matador-0.2.0.dmg",
-  "notes": "0.2.0 — Reliability + workers + bulk actions + charts. Auto-reconnect with exponential backoff, sentinel failover detection, stalled-job banner, cluster cross-slot pipeline split. Workers tab via CLIENT LIST. Bulk select with shift/cmd click + Retry all / Promote all / Remove all. Metrics tab with stacked area + throughput + stalled charts via Swift Charts; inline throughput sparkline in queue header. Cron-parser-backed scheduler detail with next 5 fires. Add Job dialog (BullMQ-shape insert with delay/priority/attempts). Settings pane (poll intervals, theme override, page size). Full keyboard shortcuts. Universal binary (arm64+x86_64). CI on PRs.",
+  "version": "0.2.1",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.1/Matador-0.2.1.dmg",
+  "notes": "Fix: 'Check for Updates' could serve a stale manifest from cache, so users on a long-running session would see 'up to date' even when a new release was live. The manifest fetch now busts both URLSession's local cache and any CDN cache by appending a cache-busting timestamp + setting reloadIgnoringLocalAndRemoteCacheData.",
   "minOS": "14.0",
   "date": "2026-05-19"
 }
