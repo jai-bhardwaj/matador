@@ -15,36 +15,46 @@ struct JobDetailView: View {
                 placeholder
             }
         }
-        .background(Color(NSColor.textBackgroundColor))
+        .background(Color(NSColor.textBackgroundColor).opacity(0.4))
     }
 
     private var placeholder: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 12) {
             Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 36))
+                .font(.system(size: 36, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text("Select a job").foregroundStyle(.secondary)
+            Text("Select a job")
+                .font(.system(.title3, design: .rounded))
+                .foregroundStyle(.secondary)
+            Text("Pick a job from the list to see its data, options, and trace.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func detail(_ d: BullJobDetail) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 20) {
                 header(d)
-                Divider()
                 actions(d)
-                Divider()
                 metaGrid(d)
 
                 if let reason = d.failedReason, !reason.isEmpty {
-                    section("Failed Reason") {
+                    section("Failed reason", accent: Theme.failed) {
                         Text(reason)
-                            .font(.system(.callout, design: .monospaced))
+                            .font(Theme.mono)
                             .foregroundStyle(.red)
                             .textSelection(.enabled)
-                            .padding(10)
-                            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(Color.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.red.opacity(0.15), lineWidth: 1)
+                            )
                     }
                 }
 
@@ -57,57 +67,76 @@ struct JobDetailView: View {
                     JSONBlock(text: d.opts)
                 }
                 if !d.returnvalue.isEmpty {
-                    section("Return Value") {
+                    section("Return value", accent: Theme.active) {
                         JSONBlock(text: d.returnvalue)
                     }
                 }
                 if !d.stacktrace.isEmpty {
-                    section("Stack Trace (\(d.stacktrace.count))") {
-                        VStack(alignment: .leading, spacing: 6) {
+                    section("Stack trace", count: d.stacktrace.count, accent: Theme.failed) {
+                        VStack(alignment: .leading, spacing: 4) {
                             ForEach(Array(d.stacktrace.enumerated()), id: \.offset) { idx, frame in
-                                Text("[\(idx)] \(frame)")
-                                    .font(.system(.caption, design: .monospaced))
-                                    .textSelection(.enabled)
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text("\(idx)")
+                                        .font(Theme.monoTiny.monospacedDigit())
+                                        .foregroundStyle(.tertiary)
+                                        .frame(width: 24, alignment: .trailing)
+                                    Text(frame)
+                                        .font(Theme.monoSmall)
+                                        .textSelection(.enabled)
+                                }
                             }
                         }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                        .codeBlock()
                     }
                 }
                 if !d.logs.isEmpty {
-                    section("Logs (\(d.logs.count))") {
-                        VStack(alignment: .leading, spacing: 4) {
+                    section("Logs", count: d.logs.count) {
+                        VStack(alignment: .leading, spacing: 2) {
                             ForEach(Array(d.logs.enumerated()), id: \.offset) { _, line in
                                 Text(line)
-                                    .font(.system(.caption, design: .monospaced))
+                                    .font(Theme.monoSmall)
                                     .textSelection(.enabled)
                             }
                         }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                        .codeBlock()
                     }
                 }
             }
-            .padding(20)
+            .padding(24)
         }
     }
 
     private func header(_ d: BullJobDetail) -> some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("#\(d.id) — \(d.name)")
-                    .font(.title3.weight(.semibold))
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(state.selectedState.accent.opacity(0.16))
+                    .frame(width: 40, height: 40)
+                Image(systemName: state.selectedState.systemIcon)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(state.selectedState.accent)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(d.name)
+                        .font(.system(.title2, design: .rounded).weight(.semibold))
+                    Text("#\(d.id)")
+                        .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.12), in: Capsule())
+                }
                 Text(d.queueKey)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .font(Theme.monoSmall)
+                    .foregroundStyle(.tertiary)
             }
             Spacer()
             Button {
                 Task { await state.loadJobDetail() }
             } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless)
+                .help("Refresh")
         }
     }
 
@@ -118,13 +147,15 @@ struct JobDetailView: View {
                 Button {
                     Task { await state.retrySelectedJob() }
                 } label: { Label("Retry", systemImage: "arrow.clockwise.circle") }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
             }
             if state.selectedState == .delayed {
                 Button {
                     Task { await state.promoteSelectedJob() }
                 } label: { Label("Promote", systemImage: "arrow.up.circle") }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
             }
             Spacer()
             Button(role: .destructive) {
@@ -136,39 +167,83 @@ struct JobDetailView: View {
                 )
             } label: { Label("Remove", systemImage: "trash") }
                 .buttonStyle(.bordered)
+                .controlSize(.regular)
         }
     }
 
     private func metaGrid(_ d: BullJobDetail) -> some View {
-        Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
-            row("Attempts", "\(d.attemptsMade)")
-            row("Delay", "\(d.delay)ms")
-            if let p = d.priority { row("Priority", "\(p)") }
-            row("Created", d.timestamp?.formatted(date: .abbreviated, time: .standard) ?? "—")
-            row("Started", d.processedOn?.formatted(date: .abbreviated, time: .standard) ?? "—")
-            row("Finished", d.finishedOn?.formatted(date: .abbreviated, time: .standard) ?? "—")
-            if let parent = d.parent { row("Parent", parent) }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                metaCell("Attempts", "\(d.attemptsMade)", icon: "arrow.clockwise")
+                Divider().frame(height: 32)
+                metaCell("Delay", d.delay > 0 ? "\(d.delay)ms" : "—", icon: "clock")
+                if let p = d.priority {
+                    Divider().frame(height: 32)
+                    metaCell("Priority", "\(p)", icon: "arrow.up.right")
+                }
+            }
+            Divider().opacity(0.5)
+            HStack(spacing: 0) {
+                metaCell("Created", d.timestamp?.formatted(.relative(presentation: .named)) ?? "—", icon: "calendar")
+                Divider().frame(height: 32)
+                metaCell("Started", d.processedOn?.formatted(.relative(presentation: .named)) ?? "—", icon: "play")
+                Divider().frame(height: 32)
+                metaCell("Finished", d.finishedOn?.formatted(.relative(presentation: .named)) ?? "—", icon: "flag.checkered")
+            }
         }
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
     }
 
-    private func row(_ label: String, _ value: String) -> some View {
-        GridRow {
-            Text(label)
-                .font(.caption.smallCaps())
-                .foregroundStyle(.secondary)
-                .gridColumnAlignment(.leading)
+    private func metaCell(_ label: String, _ value: String, icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text(label)
+                    .font(Theme.sectionLabel)
+                    .foregroundStyle(.secondary)
+            }
             Text(value)
-                .font(.system(.callout, design: .monospaced))
-                .textSelection(.enabled)
+                .font(Theme.mono)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 
     @ViewBuilder
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.smallCaps())
-                .foregroundStyle(.secondary)
+    private func section<Content: View>(
+        _ title: String,
+        count: Int? = nil,
+        accent: Color = Theme.brand,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Rectangle()
+                    .fill(accent.opacity(0.7))
+                    .frame(width: 3, height: 12)
+                    .clipShape(Capsule())
+                Text(title.uppercased())
+                    .font(.caption.weight(.semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(.secondary)
+                if let c = count {
+                    Text("\(c)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 0)
+                        .background(Color.secondary.opacity(0.10), in: Capsule())
+                }
+            }
             content()
         }
     }
@@ -180,14 +255,14 @@ struct JobDetailView: View {
         let hasParent = d.parent != nil
         if hasParent || !unresolved.isEmpty || !resolved.isEmpty {
             section("Flow") {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(spacing: 6) {
                     if let parent = d.parent {
                         FlowRow(label: "Parent", value: parent, icon: "arrow.up.circle.fill", color: .blue) {
                             jumpTo(parentRef: parent)
                         }
                     }
                     ForEach(unresolved, id: \.self) { ref in
-                        FlowRow(label: "Waiting child", value: ref, icon: "circle", color: .orange) {
+                        FlowRow(label: "Waiting child", value: ref, icon: "hourglass", color: .orange) {
                             jumpTo(parentRef: ref)
                         }
                     }
@@ -197,21 +272,15 @@ struct JobDetailView: View {
                         }
                     }
                 }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                .cardStyle()
             }
         }
     }
 
-    /// Parent/child refs look like "bull:emails:42". Switch the active queue
-    /// (if it's in our discovered list) and select the job id.
     private func jumpTo(parentRef ref: String) {
-        // ref format: "<prefix>:<queueName>:<id>"
         let parts = ref.split(separator: ":")
         guard parts.count >= 3, let lastID = parts.last else { return }
         let id = String(lastID)
-        // Find queue: prefix is first segment, queueName is everything in between
         let qname = parts.dropFirst().dropLast().joined(separator: ":")
         if let q = state.queues.first(where: { $0.name == qname }) {
             Task {
@@ -233,24 +302,31 @@ struct FlowRow: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .foregroundStyle(color)
-                    .font(.caption)
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(color.opacity(0.16))
+                        .frame(width: 22, height: 22)
+                    Image(systemName: icon)
+                        .font(.caption)
+                        .foregroundStyle(color)
+                }
                 Text(label)
-                    .font(.caption.smallCaps())
+                    .font(Theme.sectionLabel)
                     .foregroundStyle(.secondary)
                     .frame(width: 110, alignment: .leading)
                 Text(value)
-                    .font(.system(.caption, design: .monospaced))
+                    .font(Theme.monoSmall)
                     .textSelection(.enabled)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                Image(systemName: "arrow.right.circle")
+                Image(systemName: "chevron.right")
                     .foregroundStyle(.tertiary)
                     .font(.caption2)
             }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 6)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
@@ -262,11 +338,7 @@ struct JSONBlock: View {
 
     var body: some View {
         Text(pretty)
-            .font(.system(.caption, design: .monospaced))
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            .codeBlock()
     }
 
     private var pretty: String {
@@ -274,7 +346,7 @@ struct JSONBlock: View {
               let obj = try? JSONSerialization.jsonObject(with: data),
               let out = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
               let s = String(data: out, encoding: .utf8)
-        else { return text.isEmpty ? "(empty)" : text }
+        else { return text.isEmpty ? "—" : text }
         return s
     }
 }

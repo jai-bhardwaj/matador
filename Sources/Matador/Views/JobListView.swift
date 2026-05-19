@@ -6,52 +6,43 @@ struct JobListView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+            Divider().opacity(0.5)
             modeSwitcher
-            Divider()
+            Divider().opacity(0.5)
             switch state.queueViewMode {
             case .jobs:
                 stateTabs
-                Divider()
+                Divider().opacity(0.4)
                 jobsTable
             case .schedulers:
                 SchedulersView()
             }
         }
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(.thinMaterial)
     }
 
-    private var modeSwitcher: some View {
-        HStack {
-            Picker("View", selection: bindViewMode()) {
-                ForEach(QueueViewMode.allCases) { m in
-                    Text(m.label).tag(m)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 240)
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-    }
-
-    private func bindViewMode() -> Binding<QueueViewMode> {
-        Binding(
-            get: { state.queueViewMode },
-            set: { newMode in Task { await state.setViewMode(newMode) } }
-        )
-    }
+    // MARK: Header
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             if let q = state.selectedQueue {
-                Image(systemName: q.isPaused ? "pause.circle.fill" : "circle.fill")
-                    .foregroundStyle(q.isPaused ? .yellow : .green)
-                    .font(.caption)
-                Text(q.name)
-                    .font(.system(.headline, design: .default))
+                ZStack {
+                    Circle()
+                        .fill(q.isPaused ? Color.yellow.opacity(0.18) : Color.green.opacity(0.18))
+                        .frame(width: 22, height: 22)
+                    Image(systemName: q.isPaused ? "pause.fill" : "circle.fill")
+                        .font(.system(size: 8))
+                        .foregroundStyle(q.isPaused ? .yellow : .green)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(q.name)
+                        .font(.system(.title3, design: .rounded).weight(.semibold))
+                    if q.isPaused {
+                        Text("paused")
+                            .font(Theme.monoTiny)
+                            .foregroundStyle(.yellow)
+                    }
+                }
                 Spacer()
                 Button {
                     Task { await state.togglePause() }
@@ -60,10 +51,10 @@ struct JobListView: View {
                           systemImage: q.isPaused ? "play.fill" : "pause.fill")
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
+                .controlSize(.regular)
 
                 Menu {
-                    Button("Clean \(state.selectedState.label) (up to 1000)") {
+                    Button("Clean current state (up to 1000)") {
                         state.confirmAction = ConfirmAction(
                             title: "Clean \(state.selectedState.label)?",
                             message: "Permanently remove up to 1000 \(state.selectedState.label.lowercased()) jobs from \(q.name).",
@@ -71,7 +62,7 @@ struct JobListView: View {
                             action: { Task { await state.cleanCurrentState(limit: 1000) } }
                         )
                     }
-                    Button("Drain queue (waiting + delayed + prioritized)") {
+                    Button("Drain queue (waiting + delayed + prioritized + paused)") {
                         state.confirmAction = ConfirmAction(
                             title: "Drain \(q.name)?",
                             message: "Remove every waiting, delayed, prioritized, and paused job. Active jobs are untouched.",
@@ -80,23 +71,58 @@ struct JobListView: View {
                         )
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
+                    Image(systemName: "ellipsis")
+                        .font(.body)
                 }
                 .menuStyle(.borderlessButton)
-                .frame(width: 28)
+                .menuIndicator(.hidden)
+                .frame(width: 28, height: 28)
             } else {
-                Text("No queue selected")
+                Text("Select a queue")
                     .foregroundStyle(.secondary)
+                    .font(.title3)
                 Spacer()
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
     }
+
+    // MARK: Mode switcher
+
+    private var modeSwitcher: some View {
+        HStack(spacing: 6) {
+            ForEach(QueueViewMode.allCases) { m in
+                Button {
+                    Task { await state.setViewMode(m) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: m == .jobs ? "list.bullet" : "calendar")
+                            .font(.caption2)
+                        Text(m.label)
+                            .font(.system(.callout, design: .rounded).weight(.medium))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(
+                        state.queueViewMode == m ? Theme.brandSoft : Color.clear,
+                        in: Capsule()
+                    )
+                    .foregroundStyle(state.queueViewMode == m ? Theme.brand : .secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: State tabs
 
     private var stateTabs: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 ForEach(JobState.allCases) { s in
                     StateTab(
                         state: s,
@@ -108,34 +134,52 @@ struct JobListView: View {
                     }
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
         }
     }
+
+    // MARK: Jobs table
 
     private var jobsTable: some View {
         Group {
             if state.selectedQueue == nil {
-                emptyMessage("Select a queue from the sidebar")
+                emptyMessage(icon: "tray", title: "Pick a queue", subtitle: "Select one from the sidebar")
             } else if state.jobsLoading && state.jobs.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.jobs.isEmpty {
-                emptyMessage("No \(state.selectedState.label.lowercased()) jobs")
+                emptyMessage(
+                    icon: state.selectedState.systemIcon,
+                    title: "No \(state.selectedState.label.lowercased()) jobs",
+                    subtitle: nil
+                )
             } else {
-                List(selection: bindSelectedJobID()) {
-                    ForEach(filteredJobs) { job in
-                        JobRow(job: job).tag(job.id)
-                    }
-                    if state.hasMore {
-                        Button("Load more…") {
-                            Task { await state.loadMoreJobs() }
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(filteredJobs) { job in
+                            JobRow(job: job, selected: state.selectedJobID == job.id)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    Task { await state.selectJob(job.id) }
+                                }
                         }
-                        .buttonStyle(.borderless)
-                        .frame(maxWidth: .infinity)
+                        if state.hasMore {
+                            Button {
+                                Task { await state.loadMoreJobs() }
+                            } label: {
+                                Text("Load more")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 8)
+                            }
+                            .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity)
+                        }
                     }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 8)
                 }
-                .listStyle(.inset(alternatesRowBackgrounds: true))
-                .searchable(text: bindJobSearch(), prompt: "Filter jobs…")
+                .searchable(text: bindJobSearch(), prompt: "Filter jobs by id, name, or error")
             }
         }
     }
@@ -150,24 +194,21 @@ struct JobListView: View {
         }
     }
 
-    private func emptyMessage(_ text: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: "tray")
-                .font(.system(size: 28))
+    private func emptyMessage(icon: String, title: String, subtitle: String?) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 30, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text(text).foregroundStyle(.secondary)
+            Text(title)
+                .font(.system(.title3, design: .rounded))
+                .foregroundStyle(.secondary)
+            if let s = subtitle {
+                Text(s)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func bindSelectedJobID() -> Binding<String?> {
-        Binding(
-            get: { state.selectedJobID },
-            set: { id in
-                if let id = id { Task { await state.selectJob(id) } }
-                else { state.selectedJobID = nil; state.jobDetail = nil }
-            }
-        )
     }
 
     private func bindJobSearch() -> Binding<String> {
@@ -175,73 +216,124 @@ struct JobListView: View {
     }
 }
 
+// MARK: - State tab pill
+
 struct StateTab: View {
     let state: JobState
     let count: Int
     let selected: Bool
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
+            Image(systemName: state.systemIcon)
+                .font(.caption2)
+                .foregroundStyle(selected ? state.accent : (count > 0 ? Color.primary.opacity(0.7) : Color.secondary))
             Text(state.label)
-                .font(.system(.callout))
-            Text("\(count)")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(selected ? .white : (count > 0 ? Color.primary : Color.secondary))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 1)
-                .background(selected ? Color.accentColor.opacity(0.4) : Color.secondary.opacity(0.12), in: Capsule())
+                .font(.system(.callout, design: .rounded).weight(selected ? .semibold : .regular))
+            if count > 0 {
+                Text("\(count)")
+                    .font(.system(.caption, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(selected ? state.accent : Color.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 0)
+                    .background(
+                        (selected ? state.accent.opacity(0.18) : Color.secondary.opacity(0.12)),
+                        in: Capsule()
+                    )
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(selected ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(selected ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
+        .foregroundStyle(selected ? state.accent : .primary)
+        .background(
+            selected ? state.accent.opacity(0.12) : Color.clear,
+            in: Capsule()
         )
-        .contentShape(Rectangle())
+        .overlay(
+            Capsule()
+                .stroke(selected ? state.accent.opacity(0.3) : Color.primary.opacity(0.06), lineWidth: 1)
+        )
     }
 }
 
+// MARK: - Job row
+
 struct JobRow: View {
     let job: BullJobSummary
+    let selected: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
                     Text("#\(job.id)")
                         .font(.system(.callout, design: .monospaced).weight(.semibold))
                         .foregroundStyle(.primary)
                     if let n = job.name, !n.isEmpty {
                         Text(n)
-                            .font(.system(.caption))
+                            .font(.system(.callout, design: .rounded))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
                 if let reason = job.failedReason, !reason.isEmpty {
-                    Text(reason)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                        Text(reason)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(1)
+                    }
                 } else if let ts = job.timestamp {
-                    Text(ts.formatted(date: .abbreviated, time: .standard))
+                    Text(ts.formatted(.relative(presentation: .named)))
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
             }
-            Spacer()
+            Spacer(minLength: 0)
             if let p = job.progress, p > 0 {
-                Text("\(Int(p))%")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                ProgressBadge(percent: Int(p))
             }
             if let a = job.attemptsMade, a > 1 {
-                Text("×\(a)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.orange)
+                AttemptsBadge(n: a)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(selected ? Theme.brandSoft : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(selected ? Theme.brand.opacity(0.3) : Color.clear, lineWidth: 1)
+        )
+    }
+}
+
+private struct ProgressBadge: View {
+    let percent: Int
+    var body: some View {
+        Text("\(percent)%")
+            .font(.caption.monospacedDigit().weight(.medium))
+            .foregroundStyle(Theme.active)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(Theme.active.opacity(0.14), in: Capsule())
+    }
+}
+
+private struct AttemptsBadge: View {
+    let n: Int
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 9))
+            Text("\(n)")
+                .font(.caption.monospacedDigit())
+        }
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
+        .background(Color.orange.opacity(0.14), in: Capsule())
     }
 }

@@ -4,10 +4,10 @@ struct StatusBarView: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
             connectionPill
             Spacer()
-            if let q = state.selectedQueue {
+            if let q = state.selectedQueue, state.connectionState == .connected {
                 queueStats(q)
             }
             Spacer()
@@ -15,36 +15,39 @@ struct StatusBarView: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .background(Color(NSColor.windowBackgroundColor))
-        .overlay(Divider(), alignment: .top)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .background(.ultraThinMaterial)
+        .overlay(Divider().opacity(0.5), alignment: .top)
     }
 
     private var connectionPill: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 7, height: 7)
+            ZStack {
+                Circle()
+                    .fill(dotColor.opacity(0.25))
+                    .frame(width: 12, height: 12)
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 6, height: 6)
+            }
             switch state.connectionState {
             case .connected:
                 if let p = state.activeProfile {
                     Text(p.summary)
-                        .font(.system(.caption, design: .monospaced))
+                        .font(Theme.monoTiny)
                         .foregroundStyle(.secondary)
                 }
             case .connecting:
                 Text("connecting…")
-                    .font(.system(.caption, design: .monospaced))
+                    .font(Theme.monoTiny)
                     .foregroundStyle(.secondary)
             case .disconnected(let msg):
                 Text(msg ?? "disconnected")
-                    .font(.system(.caption, design: .monospaced))
+                    .font(Theme.monoTiny)
                     .foregroundStyle(.red)
                     .lineLimit(1)
-            }
-            if case .disconnected = state.connectionState {
-                Button("Reconnect") { Task { await state.connect() } }
+                Button("Retry") { Task { await state.connect() } }
                     .buttonStyle(.borderless)
                     .controlSize(.mini)
             }
@@ -60,18 +63,18 @@ struct StatusBarView: View {
     }
 
     private func queueStats(_ q: BullQueue) -> some View {
-        HStack(spacing: 14) {
-            ForEach(JobState.allCases) { s in
-                let n = q.counts[s] ?? 0
-                if n > 0 || s == .waiting || s == .active || s == .failed {
-                    HStack(spacing: 4) {
-                        Text(s.label.lowercased())
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                        Text("\(n)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(n > 0 ? .primary : .tertiary)
-                    }
+        HStack(spacing: 12) {
+            ForEach([JobState.waiting, .active, .failed], id: \.self) { s in
+                HStack(spacing: 5) {
+                    Circle().fill(s.accent).frame(width: 5, height: 5)
+                    Text(s.label.lowercased())
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text("\(q.counts[s] ?? 0)")
+                        .font(.caption2.monospacedDigit().weight(.medium))
+                        .foregroundStyle((q.counts[s] ?? 0) > 0
+                            ? AnyShapeStyle(HierarchicalShapeStyle.primary)
+                            : AnyShapeStyle(HierarchicalShapeStyle.tertiary))
                 }
             }
         }

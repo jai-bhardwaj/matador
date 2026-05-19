@@ -8,14 +8,15 @@ struct MatadorApp: App {
     var body: some Scene {
         WindowGroup(id: "main") {
             MatadorWindow()
-                .frame(minWidth: 1000, minHeight: 640)
+                .frame(minWidth: 1080, minHeight: 700)
+                .tint(Theme.brand)
                 .sheet(isPresented: $showUpdateSheet) {
                     UpdateSheetView(checker: UpdateChecker.shared)
                 }
         }
-        .windowStyle(.titleBar)
-        .windowToolbarStyle(.unified(showsTitle: true))
-        .defaultSize(width: 1280, height: 800)
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
+        .defaultSize(width: 1320, height: 860)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Matador") {
