@@ -1,7 +1,7 @@
 {
-  "version": "0.2.5",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.5/Matador-0.2.5.dmg",
-  "notes": "In-app updater: 'Download & Install' now performs the full update flow inside the app — download with live progress, mount, stage, spawn a detached swap-helper, quit, and relaunch into the new version. No more manual DMG drag. Same pattern Sparkle uses, kept zero-deps. Helper log at /tmp/matador-installer.log if anything goes wrong.",
+  "version": "0.2.6",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.6/Matador-0.2.6.dmg",
+  "notes": "Post-update toast: when the in-app updater finishes and relaunches you into the new version, a one-shot toast confirms it worked ('Updated v0.2.5 → v0.2.6').",
   "minOS": "14.0",
   "date": "2026-05-20"
 }
