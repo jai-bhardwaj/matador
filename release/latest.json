@@ -1,7 +1,7 @@
 {
-  "version": "0.2.3",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.3/Matador-0.2.3.dmg",
-  "notes": "Production-grade connect lifecycle. Fixes: (1) profile switching dead while connecting — now uses generation-tagged tasks so newer attempts cleanly supersede older ones; (2) connections to kubectl port-forwarded Redis hanging silently — auto-normalize 'localhost' to '127.0.0.1' to dodge NWConnection's IPv6-first Happy Eyeballs that hangs on the kubectl IPv4-only bind; (3) inscrutable connection errors — NWError now maps to actionable messages ('connection refused at 127.0.0.1:10000 — is Redis listening?', 'TLS handshake failed — uncheck TLS if Redis isn't rediss://', etc.); (4) 75s OS timeout replaced with 10s hard cap; (5) Cancel button + Switch profile menu now visible mid-connect.",
+  "version": "0.2.4",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.4/Matador-0.2.4.dmg",
+  "notes": "Fix: 'Check for Updates' could report 'up to date' even when a new version was live, on machines hitting a stale Fastly CDN edge for raw.githubusercontent.com (the ?ts= cache-bust from 0.2.1 only busts URLSession's local cache, not the CDN's). Updater now hits the GitHub Releases API as primary — no CDN cache, always current — with the raw manifest as fallback when rate-limited. install.sh uses the same dual-source strategy.",
   "minOS": "14.0",
   "date": "2026-05-20"
 }
