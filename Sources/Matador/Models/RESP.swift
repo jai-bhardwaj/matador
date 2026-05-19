@@ -75,11 +75,15 @@ enum RESPEncoder {
 // MARK: - Parser
 
 /// Stateful RESP parser that accumulates bytes and yields complete values.
+///
+/// Uses `[UInt8]` (not `Data`) as the buffer: Swift's `Data` does not
+/// guarantee `startIndex == 0` after `removeFirst(_:)`, which makes 0-based
+/// subscripts inside the parser unsafe. Array doesn't have that problem.
 final class RESPParser {
-    private var buffer = Data()
+    private var buffer: [UInt8] = []
 
     func feed(_ data: Data) {
-        buffer.append(data)
+        buffer.append(contentsOf: data)
     }
 
     /// Returns the next complete RESP value, or nil if more data is needed.
@@ -87,7 +91,7 @@ final class RESPParser {
     func nextValue() -> RESPValue? {
         var idx = 0
         guard let v = try? parse(at: &idx) else { return nil }
-        buffer.removeFirst(idx)
+        if idx > 0 { buffer.removeFirst(idx) }
         return v
     }
 
@@ -108,13 +112,15 @@ final class RESPParser {
         case UInt8(ascii: "$"):
             let len = Int(try readLine(at: &idx)) ?? -1
             if len < 0 { return .bulkString(nil) }
+            // Need: len payload bytes + trailing \r\n
             guard idx + len + 2 <= buffer.count else { throw NeedMore() }
-            let data = buffer.subdata(in: idx..<(idx + len))
+            let payload = Data(buffer[idx..<(idx + len)])
             idx += len
-            // skip trailing \r\n
-            guard buffer[idx] == 0x0D, buffer[idx + 1] == 0x0A else { throw NeedMore() }
+            guard buffer[idx] == 0x0D, buffer[idx + 1] == 0x0A else {
+                throw NeedMore()
+            }
             idx += 2
-            return .bulkString(data)
+            return .bulkString(payload)
         case UInt8(ascii: "*"):
             let count = Int(try readLine(at: &idx)) ?? -1
             if count < 0 { return .array(nil) }
@@ -135,7 +141,7 @@ final class RESPParser {
         var end = idx
         while end + 1 < buffer.count {
             if buffer[end] == 0x0D, buffer[end + 1] == 0x0A {
-                let s = String(data: buffer.subdata(in: idx..<end), encoding: .utf8) ?? ""
+                let s = String(decoding: buffer[idx..<end], as: UTF8.self)
                 idx = end + 2
                 return s
             }
