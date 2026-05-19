@@ -1,7 +1,7 @@
 {
-  "version": "0.1.0",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.1.0/Matador-0.1.0.dmg",
-  "notes": "Initial release. Native macOS BullMQ dashboard with multi-profile Redis (Standalone/Sentinel/Cluster), Lua-atomic mutations, schedulers tab, parent-child flow viewer.",
+  "version": "0.1.1",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.1.1/Matador-0.1.1.dmg",
+  "notes": "Modern minimalist redesign: brand-coloured pill state tabs, refined sidebar with material card, hero disconnected/connecting states, accent-barred sections in job detail, polished status bar. Fixes blank-window state when no Redis or no queues are present.",
   "minOS": "14.0",
   "date": "2026-05-19"
 }
