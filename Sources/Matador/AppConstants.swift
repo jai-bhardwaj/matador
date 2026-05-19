@@ -1,7 +1,7 @@
 import Foundation
 
 enum AppConstants {
-    static let version = "0.2.1"
+    static let version = "0.2.2"
     static let appName = "Matador"
     static let bundleID = "com.matador.app"
 
