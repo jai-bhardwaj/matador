@@ -85,7 +85,7 @@ struct StatusBarView: View {
                     .foregroundStyle(.yellow)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Button("Retry now") { Task { await state.connect() } }
+                Button("Retry now") { state.connect() }
                     .buttonStyle(.borderless)
                     .controlSize(.mini)
                     .fixedSize()
@@ -95,7 +95,7 @@ struct StatusBarView: View {
                     .foregroundStyle(.red)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Button("Retry") { Task { await state.connect() } }
+                Button("Retry") { state.connect() }
                     .buttonStyle(.borderless)
                     .controlSize(.mini)
                     .fixedSize()

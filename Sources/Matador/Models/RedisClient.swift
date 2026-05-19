@@ -132,17 +132,49 @@ actor RedisClient {
         return (masterHost, masterPort)
     }
 
+    /// Hard timeout in seconds for the TCP/TLS handshake. Without this NWConnection
+    /// can sit for ~75s on a black hole before the OS gives up.
+    private let connectTimeoutSeconds: Double = 10
+
     private func openConnection(host: String, port: UInt16) async throws {
+        // Normalise "localhost" → "127.0.0.1" to dodge IPv6-first Happy Eyeballs:
+        // kubectl port-forward binds IPv4-only and NWConnection's ::1 attempt can
+        // hang silently before it falls back to v4. Pinning to 127.0.0.1 matches
+        // what redis-cli / RedisInsight / every other Redis tool does.
+        let resolvedHost = (host.lowercased() == "localhost") ? "127.0.0.1" : host
+
         let params: NWParameters = useTLS
             ? NWParameters(tls: .init(), tcp: .init())
             : NWParameters.tcp
         let endpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(host),
+            host: NWEndpoint.Host(resolvedHost),
             port: NWEndpoint.Port(rawValue: port) ?? .init(integerLiteral: 6379)
         )
         let conn = NWConnection(to: endpoint, using: params)
         self.connection = conn
 
+        // Race the state handler against a timeout sleep. First-finisher wins.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await Self.awaitReady(conn, host: resolvedHost, port: port, useTLS: self.useTLS)
+            }
+            group.addTask { [seconds = connectTimeoutSeconds] in
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                conn.cancel()
+                throw RedisError.connectionFailed("timed out after \(Int(seconds))s connecting to \(resolvedHost):\(port)")
+            }
+            do {
+                try await group.next()
+                group.cancelAll()
+            } catch {
+                group.cancelAll()
+                conn.cancel()
+                throw error
+            }
+        }
+    }
+
+    private static func awaitReady(_ conn: NWConnection, host: String, port: UInt16, useTLS: Bool) async throws {
         let resumed = AtomicFlag()
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             conn.stateUpdateHandler = { state in
@@ -151,7 +183,7 @@ actor RedisClient {
                     if resumed.setIfUnset() { cont.resume() }
                 case .failed(let err):
                     if resumed.setIfUnset() {
-                        cont.resume(throwing: RedisError.connectionFailed(err.localizedDescription))
+                        cont.resume(throwing: Self.friendlyError(err, host: host, port: port, useTLS: useTLS))
                     }
                 case .cancelled:
                     if resumed.setIfUnset() {
@@ -162,6 +194,34 @@ actor RedisClient {
                 }
             }
             conn.start(queue: .global(qos: .userInitiated))
+        }
+    }
+
+    /// Map raw NWError into a message the user can act on.
+    private static func friendlyError(_ err: NWError, host: String, port: UInt16, useTLS: Bool) -> RedisError {
+        let target = "\(host):\(port)"
+        switch err {
+        case .posix(let code):
+            switch code {
+            case .ECONNREFUSED:
+                return .connectionFailed("connection refused at \(target) — is Redis listening, and is your kubectl port-forward still running?")
+            case .EHOSTUNREACH, .ENETUNREACH:
+                return .connectionFailed("network unreachable: \(target)")
+            case .ETIMEDOUT:
+                return .connectionFailed("TCP timeout: \(target)")
+            case .ECONNRESET:
+                return .connectionFailed("connection reset by \(target)\(useTLS ? " — possibly TLS mismatch (server is plain TCP?)" : "")")
+            case .EADDRNOTAVAIL:
+                return .connectionFailed("address not available: \(target)")
+            default:
+                return .connectionFailed("\(code) at \(target)")
+            }
+        case .dns(let code):
+            return .connectionFailed("DNS error \(code) resolving \(host)")
+        case .tls(let code):
+            return .connectionFailed("TLS handshake failed (code \(code)) — uncheck TLS in the profile if Redis isn't running rediss://")
+        @unknown default:
+            return .connectionFailed("\(err.localizedDescription) [\(target)]")
         }
     }
 

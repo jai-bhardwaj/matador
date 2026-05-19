@@ -98,7 +98,7 @@ struct ProfileEditSheet: View {
                     state.editingProfile = nil
                     state.showProfileSheet = false
                     dismiss()
-                    Task { await state.connect() }
+                    state.connect()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)

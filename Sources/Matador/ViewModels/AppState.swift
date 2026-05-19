@@ -71,6 +71,10 @@ final class AppState {
     private var reconnectTask: Task<Void, Never>?
     private var healthCheckTask: Task<Void, Never>?
     private var sentinelMonitorTask: Task<Void, Never>?
+    private var connectTask: Task<Void, Never>?
+    /// Monotonic generation per connect attempt. State mutations from a stale
+    /// in-flight connect are dropped — only the most recent attempt can win.
+    private var connectGeneration: Int = 0
     // Backoff schedule (seconds) for auto-reconnect.
     private let reconnectBackoff = [1, 2, 5, 10, 30, 60]
 
@@ -160,19 +164,68 @@ final class AppState {
         guard activeProfile?.id != profile.id else { return }
         activeProfile = profile
         ProfileStore.shared.saveLastUsed(profile.id)
-        Task { await connect() }
+        // Cancel any in-flight connect first — profile switch always wins.
+        connect()
+    }
+
+    /// Abort whatever the connection is doing right now and go to a clean
+    /// disconnected state. Wired up to the "Cancel" button in the connecting hero.
+    func cancelConnect() {
+        connectGeneration += 1  // invalidate any in-flight attempt
+        connectTask?.cancel(); connectTask = nil
+        reconnectTask?.cancel(); reconnectTask = nil
+        Task { @MainActor in
+            await redis?.disconnect()
+            redis = nil
+            bull = nil
+            connectionState = .disconnected("Cancelled")
+        }
     }
 
     // MARK: Connect
 
-    func connect(suppressAutoRetry: Bool = false) async {
+    /// Kick off a connect attempt. Returns immediately; the work runs in a
+    /// generation-tagged Task so newer attempts (profile switch, reconnect,
+    /// cancel) can supersede this one cleanly.
+    func connect(suppressAutoRetry: Bool = false) {
+        if !suppressAutoRetry { reconnectTask?.cancel(); reconnectTask = nil }
+        connectTask?.cancel()
+        connectGeneration += 1
+        let myGen = connectGeneration
+        connectTask = Task { @MainActor [weak self] in
+            await self?._connect(generation: myGen, suppressAutoRetry: suppressAutoRetry)
+        }
+    }
+
+    /// Validate the profile before we burn 10s on a guaranteed-bad connect.
+    private func validate(_ profile: RedisProfile) -> String? {
+        switch profile.mode {
+        case .standalone:
+            if profile.host.trimmingCharacters(in: .whitespaces).isEmpty { return "Host is empty" }
+            if !(1...65535).contains(profile.port) { return "Port \(profile.port) is out of range" }
+        case .sentinel:
+            if profile.sentinelHosts.isEmpty { return "No sentinel hosts configured" }
+            if profile.sentinelMasterName.isEmpty { return "Sentinel master name is empty" }
+        case .cluster:
+            if profile.clusterSeeds.isEmpty { return "No cluster seed hosts configured" }
+        }
+        if profile.bullPrefix.trimmingCharacters(in: .whitespaces).isEmpty {
+            return "BullMQ key prefix is empty"
+        }
+        return nil
+    }
+
+    private func _connect(generation: Int, suppressAutoRetry: Bool) async {
         guard let profile = activeProfile else {
-            connectionState = .disconnected("No profile selected")
+            apply(generation: generation) { $0.connectionState = .disconnected("No profile selected") }
             return
         }
-        // User-initiated connect cancels any pending reconnect loop.
-        if !suppressAutoRetry { reconnectTask?.cancel(); reconnectTask = nil }
-        // Tear down everything except the reconnect loop (which we're inside).
+        if let err = validate(profile) {
+            apply(generation: generation) { $0.connectionState = .disconnected(err) }
+            return
+        }
+
+        // Tear down current state.
         healthCheckTask?.cancel(); healthCheckTask = nil
         sentinelMonitorTask?.cancel(); sentinelMonitorTask = nil
         queuePollTask?.cancel(); queuePollTask = nil
@@ -180,35 +233,45 @@ final class AppState {
         await redis?.disconnect()
         redis = nil
         bull = nil
-        connectionState = .connecting
+
+        // Only the current generation can flip state to .connecting.
+        apply(generation: generation) { $0.connectionState = .connecting }
 
         var password: String? = nil
         if profile.savePassword {
             password = Keychain.getPassword(for: profile.id)
-        }
-        if profile.savePassword == false {
-            passwordPrompt = PasswordPrompt(profile: profile)
+        } else {
+            apply(generation: generation) { $0.passwordPrompt = PasswordPrompt(profile: profile) }
             return
         }
 
-        await actuallyConnect(profile: profile, password: password)
+        await actuallyConnect(profile: profile, password: password, generation: generation)
     }
 
     func resumeConnect(with password: String?) async {
         guard let profile = passwordPrompt?.profile else { return }
         passwordPrompt = nil
-        connectionState = .connecting
-        await actuallyConnect(profile: profile, password: password)
+        connectGeneration += 1
+        let myGen = connectGeneration
+        apply(generation: myGen) { $0.connectionState = .connecting }
+        await actuallyConnect(profile: profile, password: password, generation: myGen)
     }
 
-    private func actuallyConnect(profile: RedisProfile, password: String?) async {
+    /// Apply a state mutation only if our generation is still current.
+    /// Prevents stale connect attempts from clobbering newer ones.
+    private func apply(generation: Int, _ mutation: (AppState) -> Void) {
+        guard generation == connectGeneration else { return }
+        mutation(self)
+    }
+
+    private func actuallyConnect(profile: RedisProfile, password: String?, generation: Int) async {
         let runner: RedisCommandRunner
         do {
             switch profile.mode {
             case .cluster:
                 let seeds = profile.clusterSeeds.compactMap { HostPort.parse($0, fallback: 6379) }
                 guard !seeds.isEmpty else {
-                    connectionState = .disconnected("No cluster seed hosts configured")
+                    apply(generation: generation) { $0.connectionState = .disconnected("No cluster seed hosts configured") }
                     return
                 }
                 let cluster = RedisClusterClient(
@@ -228,7 +291,7 @@ final class AppState {
                 } else {
                     let hosts = profile.sentinelHosts.compactMap { HostPort.parse($0, fallback: 26379) }
                     guard !hosts.isEmpty else {
-                        connectionState = .disconnected("No sentinel hosts configured")
+                        apply(generation: generation) { $0.connectionState = .disconnected("No sentinel hosts configured") }
                         return
                     }
                     target = .sentinel(
@@ -248,6 +311,12 @@ final class AppState {
                 runner = client
             }
 
+            // Stale generation? A newer connect won the race; tear this down.
+            guard generation == connectGeneration else {
+                await runner.disconnect()
+                return
+            }
+
             self.redis = runner
             self.bull = BullMQService(client: runner, prefix: profile.bullPrefix)
             connectionState = .connected
@@ -257,11 +326,11 @@ final class AppState {
             startHealthCheck()
             if profile.mode == .sentinel { startSentinelMonitor(profile: profile, password: password) }
         } catch {
+            // Stale generation? Drop the error silently — the new attempt owns the UI.
+            guard generation == connectGeneration else { return }
             self.redis = nil
             self.bull = nil
             connectionState = .disconnected(error.localizedDescription)
-            // Auto-reconnect even on the first failed connect, unless the user
-            // explicitly closed the app or there's no profile to retry against.
             if activeProfile != nil {
                 scheduleReconnect(after: error)
             }
@@ -319,8 +388,17 @@ final class AppState {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }
                 if Task.isCancelled { return }
-                // Try once
-                await self.connect(suppressAutoRetry: true)
+                // Try once — fire-and-wait via polling for the result. connect()
+                // is now sync (spawns its own task) so we await its outcome by
+                // watching connectionState until it's no longer .connecting.
+                await MainActor.run { self.connect(suppressAutoRetry: true) }
+                while await MainActor.run(body: {
+                    if case .connecting = self.connectionState { return true }
+                    return false
+                }) {
+                    if Task.isCancelled { return }
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
                 let connected = await MainActor.run { self.connectionState == .connected }
                 if connected { return }
             }

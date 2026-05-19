@@ -37,7 +37,7 @@ struct ContentView: View {
         }
         .tint(Theme.brand)
         .task {
-            await state.connect()
+            state.connect()
             await UpdateChecker.shared.checkForUpdates()
         }
         .sheet(isPresented: bindShowProfileSheet()) {
@@ -131,6 +131,31 @@ struct ConnectingHero: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            HStack(spacing: 10) {
+                Button {
+                    state.cancelConnect()
+                } label: {
+                    Label("Cancel", systemImage: "xmark.circle")
+                        .padding(.horizontal, 8)
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(.cancelAction)
+                if !state.profiles.isEmpty, state.profiles.count > 1 {
+                    Menu {
+                        ForEach(state.profiles) { p in
+                            if p.id != state.activeProfile?.id {
+                                Button(p.name) { state.selectProfile(p) }
+                            }
+                        }
+                    } label: {
+                        Label("Switch profile", systemImage: "arrow.left.arrow.right")
+                            .padding(.horizontal, 8)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 160)
+                }
+            }
+            .padding(.top, 6)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -177,7 +202,7 @@ struct DisconnectedHero: View {
 
                     if state.activeProfile != nil {
                         Button {
-                            Task { await state.connect() }
+                            state.connect()
                         } label: {
                             Label("Retry", systemImage: "arrow.clockwise")
                                 .padding(.horizontal, 6)
