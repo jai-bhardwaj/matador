@@ -91,6 +91,22 @@ final class AppState {
             activeProfile = profiles.first
         }
         registerShortcutObservers()
+        celebrateIfJustUpdated()
+    }
+
+    /// One-shot "you're now on vX.Y.Z" toast right after the in-app updater
+    /// swaps the binary and relaunches us. Compares persisted last-seen
+    /// version with the bundled one.
+    private func celebrateIfJustUpdated() {
+        let key = "matador.lastSeenVersion"
+        let previous = UserDefaults.standard.string(forKey: key)
+        let current = AppConstants.version
+        UserDefaults.standard.set(current, forKey: key)
+        guard let previous = previous, previous != current else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            self.showToast("Updated v\(previous) → v\(current)")
+        }
     }
 
     /// Wire main-menu CommandMenu items (which post via NotificationCenter)
