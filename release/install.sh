@@ -7,6 +7,7 @@
 
 set -euo pipefail
 
+API_URL="https://api.github.com/repos/jai-bhardwaj/matador/releases/latest"
 MANIFEST_URL="https://raw.githubusercontent.com/jai-bhardwaj/matador/main/release/latest.json"
 APP_NAME="Matador.app"
 DEST="/Applications/${APP_NAME}"
@@ -18,11 +19,20 @@ fail() { printf "\n✗ %s\n" "$*" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || fail "curl required"
 command -v hdiutil >/dev/null 2>&1 || fail "hdiutil required (macOS only)"
 
-step "Fetching latest manifest"
-MANIFEST="$(curl -fsSL "$MANIFEST_URL")"
-VERSION="$(printf "%s" "$MANIFEST" | sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p')"
-URL="$(printf "%s" "$MANIFEST" | sed -n 's/.*"url" *: *"\([^"]*\)".*/\1/p')"
-[[ -n "$VERSION" && -n "$URL" ]] || fail "Could not parse manifest"
+step "Fetching latest release (GitHub API — always fresh)"
+API_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$API_URL" 2>/dev/null || true)"
+if [[ -n "$API_JSON" ]]; then
+    VERSION="$(printf "%s" "$API_JSON" | sed -n 's/.*"tag_name" *: *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)"
+    URL="$(printf "%s" "$API_JSON" | sed -n 's/.*"browser_download_url" *: *"\([^"]*\.dmg\)".*/\1/p' | head -1)"
+fi
+# Fallback to raw manifest if API failed or rate-limited
+if [[ -z "${VERSION:-}" || -z "${URL:-}" ]]; then
+    printf "    (API unavailable, falling back to raw manifest)\n"
+    MANIFEST="$(curl -fsSL "${MANIFEST_URL}?ts=$(date +%s)")"
+    VERSION="$(printf "%s" "$MANIFEST" | sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p')"
+    URL="$(printf "%s" "$MANIFEST" | sed -n 's/.*"url" *: *"\([^"]*\)".*/\1/p')"
+fi
+[[ -n "$VERSION" && -n "$URL" ]] || fail "Could not determine latest release"
 ok "Latest: v${VERSION}"
 
 step "Downloading DMG"
