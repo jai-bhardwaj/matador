@@ -280,9 +280,43 @@ final class AppState {
         mutation(self)
     }
 
+    /// Try opening a runner with each TLS setting in order. Only fall through
+    /// to the next attempt if the error looks TLS-related; other errors (auth,
+    /// connection refused, etc.) propagate immediately because retrying with a
+    /// different TLS setting won't fix them.
+    private func openWithTLSFallback(
+        tlsOrder: [Bool],
+        open: (Bool) async throws -> RedisCommandRunner
+    ) async throws -> RedisCommandRunner {
+        var lastError: Error?
+        for (idx, useTLS) in tlsOrder.enumerated() {
+            do {
+                return try await open(useTLS)
+            } catch {
+                lastError = error
+                let msg = error.localizedDescription.lowercased()
+                let looksTLSish = msg.contains("tls") || msg.contains("handshake")
+                                  || msg.contains("ssl") || msg.contains("reset")
+                                  || msg.contains("certificate")
+                let hasFallback = idx + 1 < tlsOrder.count
+                if !looksTLSish || !hasFallback {
+                    throw error
+                }
+            }
+        }
+        throw lastError ?? RedisError.connectionFailed("no TLS modes attempted")
+    }
+
     private func actuallyConnect(profile: RedisProfile, password: String?, generation: Int) async {
         let runner: RedisCommandRunner
         do {
+            let tlsOrder: [Bool]
+            switch profile.tlsMode {
+            case .off:  tlsOrder = [false]
+            case .on:   tlsOrder = [true]
+            case .auto: tlsOrder = [true, false]   // try TLS first, fall back
+            }
+
             switch profile.mode {
             case .cluster:
                 let seeds = profile.clusterSeeds.compactMap { HostPort.parse($0, fallback: 6379) }
@@ -290,15 +324,17 @@ final class AppState {
                     apply(generation: generation) { $0.connectionState = .disconnected("No cluster seed hosts configured") }
                     return
                 }
-                let cluster = RedisClusterClient(
-                    seeds: seeds.map { ($0.host, $0.port) },
-                    tls: profile.tls,
-                    username: profile.username.isEmpty ? nil : profile.username,
-                    password: password,
-                    database: profile.database
-                )
-                try await cluster.connect()
-                runner = cluster
+                runner = try await openWithTLSFallback(tlsOrder: tlsOrder) { useTLS in
+                    let cluster = RedisClusterClient(
+                        seeds: seeds.map { ($0.host, $0.port) },
+                        tls: useTLS,
+                        username: profile.username.isEmpty ? nil : profile.username,
+                        password: password,
+                        database: profile.database
+                    )
+                    try await cluster.connect()
+                    return cluster
+                }
 
             case .standalone, .sentinel:
                 let target: ConnectionTarget
@@ -316,15 +352,17 @@ final class AppState {
                         sentinelPassword: password
                     )
                 }
-                let client = RedisClient(
-                    target: target,
-                    tls: profile.tls,
-                    username: profile.username.isEmpty ? nil : profile.username,
-                    password: password,
-                    database: profile.database
-                )
-                try await client.connect()
-                runner = client
+                runner = try await openWithTLSFallback(tlsOrder: tlsOrder) { useTLS in
+                    let client = RedisClient(
+                        target: target,
+                        tls: useTLS,
+                        username: profile.username.isEmpty ? nil : profile.username,
+                        password: password,
+                        database: profile.database
+                    )
+                    try await client.connect()
+                    return client
+                }
             }
 
             // Stale generation? A newer connect won the race; tear this down.
