@@ -1,0 +1,8 @@
+.DS_Store
+.build/
+.swiftpm/
+build/
+dmg/*.dmg
+release/_master_1024.png
+release/AppIcon.iconset/
+*.xcodeproj

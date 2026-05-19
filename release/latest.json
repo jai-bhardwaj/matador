@@ -1,0 +1,7 @@
+{
+  "version": "0.1.0",
+  "url": "",
+  "notes": "Initial release placeholder. Will be overwritten by publish.sh on first real release.",
+  "minOS": "14.0",
+  "date": "2026-05-18"
+}
