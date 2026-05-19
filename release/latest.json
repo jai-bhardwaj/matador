@@ -1,7 +1,7 @@
 {
-  "version": "0.2.1",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.1/Matador-0.2.1.dmg",
-  "notes": "Fix: 'Check for Updates' could serve a stale manifest from cache, so users on a long-running session would see 'up to date' even when a new release was live. The manifest fetch now busts both URLSession's local cache and any CDN cache by appending a cache-busting timestamp + setting reloadIgnoringLocalAndRemoteCacheData.",
+  "version": "0.2.2",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.2/Matador-0.2.2.dmg",
+  "notes": "Responsive layout fix: metric stat tiles and mode switcher were breaking horribly at narrow column widths (vertical text, mid-digit number wrap, label hyphenation). Tiles now flow into an adaptive grid; mode switcher collapses to icons; every text label uses single-line truncation with fixedSize.",
   "minOS": "14.0",
   "date": "2026-05-19"
 }
