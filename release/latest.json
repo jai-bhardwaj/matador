@@ -1,7 +1,7 @@
 {
-  "version": "0.2.6",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.6/Matador-0.2.6.dmg",
-  "notes": "Post-update toast: when the in-app updater finishes and relaunches you into the new version, a one-shot toast confirms it worked ('Updated v0.2.5 → v0.2.6').",
+  "version": "0.2.7",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.7/Matador-0.2.7.dmg",
+  "notes": "Installer perf: rewrote the DMG downloader to use URLSessionDownloadDelegate instead of URLSession.bytes(for:). The previous version was yielding one byte at a time through Swift's async machinery (2M+ async yields for a 2MB DMG) — most of the install time was async overhead, not network. Now uses native chunked transfers. Helper poll tightened from 100ms to 50ms; removed an unnecessary 250ms pre-terminate sleep.",
   "minOS": "14.0",
   "date": "2026-05-20"
 }
