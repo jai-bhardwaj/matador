@@ -46,6 +46,16 @@ struct ContentView: View {
         .sheet(item: bindPasswordPrompt()) { prompt in
             PasswordPromptSheet(prompt: prompt)
         }
+        .sheet(isPresented: bindShowAddJobSheet()) {
+            AddJobSheet()
+        }
+        .sheet(isPresented: bindShowSettingsSheet()) {
+            SettingsSheet()
+        }
+        .sheet(item: bindSchedulerDetail()) { sched in
+            SchedulerDetailSheet(scheduler: sched)
+        }
+        .preferredColorScheme(Settings.shared.appearance.colorScheme)
         .alert(item: bindConfirm()) { c in
             Alert(
                 title: Text(c.title),
@@ -62,7 +72,9 @@ struct ContentView: View {
     private var bodyContent: some View {
         switch state.connectionState {
         case .connecting:
-            ConnectingHero()
+            ConnectingHero(message: "Connecting")
+        case .reconnecting(let s, let attempt):
+            ConnectingHero(message: "Reconnecting in \(s)s (attempt \(attempt))")
         case .disconnected(let msg):
             DisconnectedHero(message: msg)
         case .connected:
@@ -89,19 +101,29 @@ struct ContentView: View {
     private func bindConfirm() -> Binding<ConfirmAction?> {
         Binding(get: { state.confirmAction }, set: { state.confirmAction = $0 })
     }
+    private func bindShowAddJobSheet() -> Binding<Bool> {
+        Binding(get: { state.showAddJobSheet }, set: { state.showAddJobSheet = $0 })
+    }
+    private func bindShowSettingsSheet() -> Binding<Bool> {
+        Binding(get: { state.showSettingsSheet }, set: { state.showSettingsSheet = $0 })
+    }
+    private func bindSchedulerDetail() -> Binding<BullScheduler?> {
+        Binding(get: { state.schedulerDetail }, set: { state.schedulerDetail = $0 })
+    }
 }
 
 // MARK: - Hero states
 
 struct ConnectingHero: View {
     @Environment(AppState.self) private var state
+    let message: String
 
     var body: some View {
         VStack(spacing: 20) {
             ProgressView()
                 .controlSize(.large)
             VStack(spacing: 6) {
-                Text("Connecting")
+                Text(message)
                     .font(Theme.displayTitle)
                 if let p = state.activeProfile {
                     Text(p.summary)

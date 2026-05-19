@@ -26,6 +26,8 @@ struct SchedulersView: View {
                     ForEach(state.schedulers) { s in
                         SchedulerRow(scheduler: s)
                             .tag(s.id)
+                            .contentShape(Rectangle())
+                            .onTapGesture(count: 2) { state.schedulerDetail = s }
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
                                     state.confirmAction = ConfirmAction(
@@ -35,6 +37,9 @@ struct SchedulersView: View {
                                         action: { Task { await state.removeScheduler(id: s.id) } }
                                     )
                                 } label: { Label("Remove", systemImage: "trash") }
+                                Button {
+                                    state.schedulerDetail = s
+                                } label: { Label("Details", systemImage: "info.circle") }
                             }
                     }
                 }

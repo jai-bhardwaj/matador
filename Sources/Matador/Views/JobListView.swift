@@ -6,19 +6,93 @@ struct JobListView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            stalledBanner
             Divider().opacity(0.5)
             modeSwitcher
             Divider().opacity(0.5)
             switch state.queueViewMode {
             case .jobs:
                 stateTabs
+                bulkSelectionBar
                 Divider().opacity(0.4)
                 jobsTable
             case .schedulers:
                 SchedulersView()
+            case .workers:
+                WorkersView()
+            case .metrics:
+                MetricsView()
             }
         }
         .background(.thinMaterial)
+    }
+
+    @ViewBuilder
+    private var stalledBanner: some View {
+        if let q = state.selectedQueue, q.stalledCount > 0 {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Theme.delayed)
+                Text("\(q.stalledCount) job\(q.stalledCount == 1 ? "" : "s") may be stalled")
+                    .font(.callout.weight(.medium))
+                Spacer()
+                Text("workers haven't extended the lock — they may be wedged or dead")
+                    .font(Theme.monoTiny)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Theme.delayed.opacity(0.12))
+            .overlay(Rectangle().fill(Theme.delayed).frame(height: 1), alignment: .top)
+            .overlay(Rectangle().fill(Theme.delayed.opacity(0.4)).frame(height: 1), alignment: .bottom)
+        }
+    }
+
+    @ViewBuilder
+    private var bulkSelectionBar: some View {
+        if !state.selectedJobIDs.isEmpty {
+            HStack(spacing: 8) {
+                Text("\(state.selectedJobIDs.count) selected")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(Theme.brand)
+                Spacer()
+                if state.selectedState == .failed {
+                    Button {
+                        state.confirmAction = ConfirmAction(
+                            title: "Retry \(state.selectedJobIDs.count) jobs?",
+                            message: "Move every selected failed job back to wait.",
+                            destructive: false,
+                            action: { Task { await state.bulkRetry() } }
+                        )
+                    } label: { Label("Retry all", systemImage: "arrow.clockwise.circle") }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                if state.selectedState == .delayed {
+                    Button {
+                        Task { await state.bulkPromote() }
+                    } label: { Label("Promote all", systemImage: "arrow.up.circle") }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                Button(role: .destructive) {
+                    state.confirmAction = ConfirmAction(
+                        title: "Remove \(state.selectedJobIDs.count) jobs?",
+                        message: "Permanently remove every selected job.",
+                        destructive: true,
+                        action: { Task { await state.bulkRemove() } }
+                    )
+                } label: { Label("Remove", systemImage: "trash") }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button("Clear") { state.clearJobSelection() }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(Theme.brand.opacity(0.06))
+        }
     }
 
     // MARK: Header
@@ -97,7 +171,7 @@ struct JobListView: View {
                     Task { await state.setViewMode(m) }
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: m == .jobs ? "list.bullet" : "calendar")
+                        Image(systemName: m.icon)
                             .font(.caption2)
                         Text(m.label)
                             .font(.system(.callout, design: .rounded).weight(.medium))
@@ -113,6 +187,18 @@ struct JobListView: View {
                 .buttonStyle(.plain)
             }
             Spacer()
+            // Inline throughput sparkline if we have data
+            if let qID = state.selectedQueue?.id {
+                let rates = MetricsStore.shared.rates(for: qID)
+                if rates.count > 1 {
+                    HStack(spacing: 6) {
+                        Text("throughput")
+                            .font(Theme.monoTiny)
+                            .foregroundStyle(.tertiary)
+                        ThroughputSparkline(rates: rates)
+                    }
+                }
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -157,11 +243,26 @@ struct JobListView: View {
                 ScrollView {
                     LazyVStack(spacing: 2) {
                         ForEach(filteredJobs) { job in
-                            JobRow(job: job, selected: state.selectedJobID == job.id)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    Task { await state.selectJob(job.id) }
+                            JobRow(
+                                job: job,
+                                selected: state.selectedJobID == job.id,
+                                bulkSelected: state.selectedJobIDs.contains(job.id),
+                                showBulkCheckbox: !state.selectedJobIDs.isEmpty
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                Task { await state.selectJob(job.id) }
+                            }
+                            .simultaneousGesture(
+                                TapGesture().modifiers(.command).onEnded {
+                                    state.toggleJobSelection(job.id)
                                 }
+                            )
+                            .simultaneousGesture(
+                                TapGesture().modifiers(.shift).onEnded {
+                                    state.toggleJobSelection(job.id)
+                                }
+                            )
                         }
                         if state.hasMore {
                             Button {
@@ -261,9 +362,16 @@ struct StateTab: View {
 struct JobRow: View {
     let job: BullJobSummary
     let selected: Bool
+    var bulkSelected: Bool = false
+    var showBulkCheckbox: Bool = false
 
     var body: some View {
         HStack(spacing: 12) {
+            if showBulkCheckbox {
+                Image(systemName: bulkSelected ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(bulkSelected ? Theme.brand : .secondary)
+                    .font(.callout)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
                     Text("#\(job.id)")
@@ -302,10 +410,18 @@ struct JobRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(selected ? Theme.brandSoft : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        .background(
+            (bulkSelected ? Theme.brand.opacity(0.12) :
+             selected ? Theme.brandSoft : Color.clear),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(selected ? Theme.brand.opacity(0.3) : Color.clear, lineWidth: 1)
+                .stroke(
+                    (bulkSelected ? Theme.brand.opacity(0.45) :
+                     selected ? Theme.brand.opacity(0.3) : Color.clear),
+                    lineWidth: 1
+                )
         )
     }
 }

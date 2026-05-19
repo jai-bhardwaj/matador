@@ -148,15 +148,59 @@ actor RedisClusterClient: RedisCommandRunner {
     }
 
     func pipeline(_ commands: [(String, [Any])]) async throws -> [RESPValue] {
-        guard let first = commands.first else { return [] }
-        guard let node = nodeForCommand(first.0, args: first.1) else {
-            throw RedisError.notConnected
+        guard !commands.isEmpty else { return [] }
+
+        // Group commands by target node, preserving original positions.
+        struct Slice { let nodeKey: String; var indices: [Int] = []; var commands: [(String, [Any])] = [] }
+        var bucketsByKey: [String: Slice] = [:]
+        var fallbackKey: String?
+
+        for (i, cmd) in commands.enumerated() {
+            let nodeKey: String
+            if let key = routingKey(forCommand: cmd.0, args: cmd.1) {
+                let slot = RedisCRC16.slot(forKey: key)
+                if let nk = self.nodeKey(forSlot: slot) {
+                    nodeKey = nk
+                } else if let any = masters.keys.first {
+                    nodeKey = any
+                } else { throw RedisError.notConnected }
+            } else {
+                if fallbackKey == nil {
+                    fallbackKey = masters.keys.first
+                }
+                guard let fb = fallbackKey else { throw RedisError.notConnected }
+                nodeKey = fb
+            }
+            var slice = bucketsByKey[nodeKey] ?? Slice(nodeKey: nodeKey)
+            slice.indices.append(i)
+            slice.commands.append(cmd)
+            bucketsByKey[nodeKey] = slice
         }
-        let replies = try await node.pipeline(commands)
-        // For pipelines we don't follow MOVED — BullMQ pipelines are all
-        // hash-tagged to one shard, so MOVED would only happen mid-resharding.
-        // If we hit one, return the error reply as-is; the caller will see it.
-        return replies
+
+        // Fast path: only one node involved → straight pipeline, no fan-out.
+        if bucketsByKey.count == 1, let only = bucketsByKey.values.first, let node = masters[only.nodeKey] {
+            return try await node.pipeline(only.commands)
+        }
+
+        // Fan out per node in parallel; reassemble in original order.
+        var out = [RESPValue](repeating: .error("cluster: missing reply"), count: commands.count)
+        try await withThrowingTaskGroup(of: (indices: [Int], replies: [RESPValue]).self) { group in
+            for (nodeKey, slice) in bucketsByKey {
+                guard let node = masters[nodeKey] else { continue }
+                let indices = slice.indices
+                let cmds = slice.commands
+                group.addTask {
+                    let r = try await node.pipeline(cmds)
+                    return (indices, r)
+                }
+            }
+            for try await pair in group {
+                for (offset, idx) in pair.indices.enumerated() {
+                    out[idx] = offset < pair.replies.count ? pair.replies[offset] : .error("cluster: short reply")
+                }
+            }
+        }
+        return out
     }
 
     func scanAll(matching pattern: String) async throws -> [String] {

@@ -54,6 +54,8 @@ struct BullQueue: Identifiable, Hashable {
     let name: String
     var counts: [JobState: Int] = [:]
     var isPaused: Bool = false
+    var stalledCount: Int = 0
+    var workerCount: Int = 0
 
     var totalActive: Int { (counts[.waiting] ?? 0) + (counts[.active] ?? 0) + (counts[.delayed] ?? 0) }
 }
@@ -122,9 +124,37 @@ enum BullKeys {
     static func scheduler(prefix: String, queue: String, id: String) -> String {
         "\(base(prefix: prefix, queue: queue)):repeat:\(id)"
     }
+    static func stalledCheck(prefix: String, queue: String) -> String {
+        "\(base(prefix: prefix, queue: queue)):stalled-check"
+    }
+    static func stalled(prefix: String, queue: String) -> String {
+        "\(base(prefix: prefix, queue: queue)):stalled"
+    }
+    static func eventsStream(prefix: String, queue: String) -> String {
+        "\(base(prefix: prefix, queue: queue)):events"
+    }
+    static func idCounter(prefix: String, queue: String) -> String {
+        "\(base(prefix: prefix, queue: queue)):id"
+    }
 }
 
 // MARK: - Scheduler model
+
+struct BullWorker: Identifiable, Hashable {
+    let id: String       // CLIENT id from Redis
+    let name: String     // SETNAME value, e.g. "bull:emails:worker:abc"
+    let addr: String     // "ip:port"
+    let idleSeconds: Int
+    let age: Int
+
+    var displayName: String {
+        // Strip "bull:<queue>:" prefix if present so the row reads cleanly.
+        if let lastColon = name.lastIndex(of: ":") {
+            return String(name[name.index(after: lastColon)...])
+        }
+        return name
+    }
+}
 
 struct BullScheduler: Identifiable, Hashable {
     let id: String
@@ -183,16 +213,16 @@ actor BullMQService {
 
     // MARK: Counts
 
-    /// Pipelined count across all states + pause flag.
-    func counts(for queue: String) async throws -> (counts: [JobState: Int], paused: Bool) {
+    /// Pipelined count across all states + pause flag + stalled count.
+    func counts(for queue: String) async throws -> (counts: [JobState: Int], paused: Bool, stalled: Int) {
         let states = JobState.allCases
         var commands: [(String, [Any])] = []
         for s in states {
             let key = BullKeys.list(prefix: prefix, queue: queue, state: s)
             commands.append((s.storage == .list ? "LLEN" : "ZCARD", [key]))
         }
-        // meta hash holds the paused flag (HGET <meta> paused → "1")
         commands.append(("HGET", [BullKeys.meta(prefix: prefix, queue: queue), "paused"]))
+        commands.append(("SCARD", [BullKeys.stalled(prefix: prefix, queue: queue)]))
 
         let replies = try await client.pipeline(commands)
         var counts: [JobState: Int] = [:]
@@ -200,10 +230,11 @@ actor BullMQService {
             counts[s] = Int(replies[i].intValue ?? 0)
         }
         let paused: Bool = {
-            if let s = replies.last?.stringValue, s == "1" || s == "true" { return true }
+            if let s = replies[states.count].stringValue, s == "1" || s == "true" { return true }
             return false
         }()
-        return (counts, paused)
+        let stalled = Int(replies.last?.intValue ?? 0)
+        return (counts, paused, stalled)
     }
 
     // MARK: Job listing
@@ -405,6 +436,70 @@ actor BullMQService {
         return removed
     }
 
+    // MARK: Add job
+
+    /// Insert a single job into `queue`. For `delay > 0` the job goes to the
+    /// delayed zset; otherwise it goes to wait.
+    @discardableResult
+    func addJob(
+        queue: String,
+        name: String,
+        data: String,
+        priority: Int = 0,
+        delayMs: Int64 = 0,
+        attempts: Int = 1
+    ) async throws -> String {
+        let idKey = BullKeys.idCounter(prefix: prefix, queue: queue)
+        let idReply = try await client.send("INCR", [idKey])
+        guard let id = idReply.intValue else {
+            throw RedisError.commandFailed("INCR returned non-integer for \(idKey)")
+        }
+        let jobID = String(id)
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let hashKey = BullKeys.job(prefix: prefix, queue: queue, id: jobID)
+
+        // BullMQ's job hash includes data, opts (json-encoded), name, timestamp,
+        // attemptsMade, delay. opts gets a generated job id under the same name.
+        let optsObj: [String: Any] = [
+            "attempts": attempts,
+            "delay": delayMs,
+        ]
+        let optsData = try JSONSerialization.data(withJSONObject: optsObj, options: [.sortedKeys])
+        let optsString = String(data: optsData, encoding: .utf8) ?? "{}"
+
+        var hsetArgs: [Any] = [hashKey]
+        hsetArgs.append(contentsOf: [
+            "name", name,
+            "data", data.isEmpty ? "{}" : data,
+            "opts", optsString,
+            "timestamp", "\(now)",
+            "delay", "\(delayMs)",
+            "priority", "\(priority)",
+            "attemptsMade", "0",
+        ])
+
+        var ops: [(String, [Any])] = [
+            ("HSET", hsetArgs),
+        ]
+        if delayMs > 0 {
+            // Delayed jobs are scored by their target run time (now + delay).
+            let runAt = now + delayMs
+            ops.append(("ZADD", [BullKeys.list(prefix: prefix, queue: queue, state: .delayed), runAt, jobID]))
+        } else if priority > 0 {
+            ops.append(("ZADD", [BullKeys.list(prefix: prefix, queue: queue, state: .prioritized), priority, jobID]))
+        } else {
+            ops.append(("LPUSH", [BullKeys.list(prefix: prefix, queue: queue, state: .waiting), jobID]))
+        }
+        // Emit a `waiting`/`delayed` event so dashboards using events streams see it.
+        let event = delayMs > 0 ? "delayed" : "waiting"
+        ops.append(("XADD", [
+            BullKeys.eventsStream(prefix: prefix, queue: queue), "*",
+            "event", event, "jobId", jobID,
+        ]))
+        _ = try await client.pipeline(ops)
+        return jobID
+    }
+
     // MARK: Schedulers
 
     /// List repeatable schedulers for a queue (sorted by next-run ascending).
@@ -470,6 +565,35 @@ actor BullMQService {
             ("ZREM", [BullKeys.repeatZset(prefix: prefix, queue: queue), id]),
             ("DEL", [BullKeys.scheduler(prefix: prefix, queue: queue, id: id)]),
         ])
+    }
+
+    // MARK: Workers
+
+    /// Return connected BullMQ workers for `queue` by parsing CLIENT LIST.
+    /// BullMQ workers `CLIENT SETNAME` to "<prefix>:<queue>:<role>:<uuid>".
+    func listWorkers(queue: String) async throws -> [BullWorker] {
+        let reply = try await client.send("CLIENT", ["LIST"])
+        guard let raw = reply.stringValue else { return [] }
+        let prefixMatch = "\(prefix):\(queue):"
+
+        var out: [BullWorker] = []
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
+            var fields: [String: String] = [:]
+            for kv in line.split(separator: " ", omittingEmptySubsequences: true) {
+                if let eq = kv.firstIndex(of: "=") {
+                    fields[String(kv[..<eq])] = String(kv[kv.index(after: eq)...])
+                }
+            }
+            guard let name = fields["name"], name.hasPrefix(prefixMatch) else { continue }
+            out.append(BullWorker(
+                id: fields["id"] ?? "?",
+                name: name,
+                addr: fields["addr"] ?? "—",
+                idleSeconds: Int(fields["idle"] ?? "") ?? 0,
+                age: Int(fields["age"] ?? "") ?? 0
+            ))
+        }
+        return out.sorted { $0.name < $1.name }
     }
 
     // MARK: Flow / dependencies

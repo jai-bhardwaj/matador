@@ -42,6 +42,13 @@ struct StatusBarView: View {
                 Text("connecting…")
                     .font(Theme.monoTiny)
                     .foregroundStyle(.secondary)
+            case .reconnecting(let s, let attempt):
+                Text("reconnecting in \(s)s (attempt \(attempt))")
+                    .font(Theme.monoTiny)
+                    .foregroundStyle(.yellow)
+                Button("Retry now") { Task { await state.connect() } }
+                    .buttonStyle(.borderless)
+                    .controlSize(.mini)
             case .disconnected(let msg):
                 Text(msg ?? "disconnected")
                     .font(Theme.monoTiny)
@@ -57,7 +64,7 @@ struct StatusBarView: View {
     private var dotColor: Color {
         switch state.connectionState {
         case .connected: return .green
-        case .connecting: return .yellow
+        case .connecting, .reconnecting: return .yellow
         case .disconnected: return .red
         }
     }

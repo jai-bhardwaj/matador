@@ -3,6 +3,7 @@ import SwiftUI
 enum ConnectionState: Equatable {
     case disconnected(String?)
     case connecting
+    case reconnecting(retryIn: Int, attempt: Int)
     case connected
 }
 
@@ -37,8 +38,12 @@ final class AppState {
     var jobDetailLoading: Bool = false
     var jobChildren: JobChildren = .empty
 
-    // View mode for the middle column: jobs or schedulers
+    // View mode for the middle column: jobs / schedulers / workers / metrics
     var queueViewMode: QueueViewMode = .jobs
+    var workers: [BullWorker] = []
+    var workersLoading: Bool = false
+    // Bulk selection
+    var selectedJobIDs: Set<String> = []
     var schedulers: [BullScheduler] = []
     var selectedSchedulerID: String?
     var schedulersLoading: Bool = false
@@ -53,6 +58,9 @@ final class AppState {
     // Sheets
     var showProfileSheet: Bool = false
     var editingProfile: RedisProfile?
+    var showAddJobSheet: Bool = false
+    var showSettingsSheet: Bool = false
+    var schedulerDetail: BullScheduler?  // when set, shows the scheduler detail sheet
 
     // Engine
     private var redis: RedisCommandRunner?
@@ -60,10 +68,14 @@ final class AppState {
 
     private var queuePollTask: Task<Void, Never>?
     private var jobPollTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+    private var healthCheckTask: Task<Void, Never>?
+    private var sentinelMonitorTask: Task<Void, Never>?
+    // Backoff schedule (seconds) for auto-reconnect.
+    private let reconnectBackoff = [1, 2, 5, 10, 30, 60]
 
     init() {
         profiles = ProfileStore.shared.load()
-        // Seed a default profile if empty so the UI isn't blank on first launch.
         if profiles.isEmpty {
             profiles = [RedisProfile()]
             ProfileStore.shared.save(profiles)
@@ -73,6 +85,50 @@ final class AppState {
             activeProfile = p
         } else {
             activeProfile = profiles.first
+        }
+        registerShortcutObservers()
+    }
+
+    /// Wire main-menu CommandMenu items (which post via NotificationCenter)
+    /// to AppState methods.
+    private func registerShortcutObservers() {
+        let c = NotificationCenter.default
+        c.addObserver(forName: .matadorRefresh, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in await self?.refreshQueues() }
+        }
+        c.addObserver(forName: .matadorTogglePause, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in await self?.togglePause() }
+        }
+        c.addObserver(forName: .matadorViewMode, object: nil, queue: .main) { [weak self] note in
+            guard let mode = note.object as? QueueViewMode else { return }
+            Task { @MainActor in await self?.setViewMode(mode) }
+        }
+        c.addObserver(forName: .matadorJobState, object: nil, queue: .main) { [weak self] note in
+            guard let s = note.object as? JobState else { return }
+            Task { @MainActor in await self?.setState(s) }
+        }
+        c.addObserver(forName: .matadorRetryJob, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in await self?.retrySelectedJob() }
+        }
+        c.addObserver(forName: .matadorPromoteJob, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in await self?.promoteSelectedJob() }
+        }
+        c.addObserver(forName: .matadorRemoveJob, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, let id = self.selectedJobID, let q = self.selectedQueue else { return }
+                self.confirmAction = ConfirmAction(
+                    title: "Remove job?",
+                    message: "Permanently remove #\(id) from \(q.name).",
+                    destructive: true,
+                    action: { Task { await self.removeSelectedJob() } }
+                )
+            }
+        }
+        c.addObserver(forName: .matadorAddJob, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.showAddJobSheet = true }
+        }
+        c.addObserver(forName: .matadorSettings, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.showSettingsSheet = true }
         }
     }
 
@@ -109,12 +165,21 @@ final class AppState {
 
     // MARK: Connect
 
-    func connect() async {
+    func connect(suppressAutoRetry: Bool = false) async {
         guard let profile = activeProfile else {
             connectionState = .disconnected("No profile selected")
             return
         }
-        await disconnect()
+        // User-initiated connect cancels any pending reconnect loop.
+        if !suppressAutoRetry { reconnectTask?.cancel(); reconnectTask = nil }
+        // Tear down everything except the reconnect loop (which we're inside).
+        healthCheckTask?.cancel(); healthCheckTask = nil
+        sentinelMonitorTask?.cancel(); sentinelMonitorTask = nil
+        queuePollTask?.cancel(); queuePollTask = nil
+        jobPollTask?.cancel(); jobPollTask = nil
+        await redis?.disconnect()
+        redis = nil
+        bull = nil
         connectionState = .connecting
 
         var password: String? = nil
@@ -122,7 +187,6 @@ final class AppState {
             password = Keychain.getPassword(for: profile.id)
         }
         if profile.savePassword == false {
-            // Prompt and bail out — UI will call resumeConnect(with:) when user submits.
             passwordPrompt = PasswordPrompt(profile: profile)
             return
         }
@@ -190,14 +254,140 @@ final class AppState {
             ProfileStore.shared.saveLastUsed(profile.id)
             await refreshQueues()
             startQueuePolling()
+            startHealthCheck()
+            if profile.mode == .sentinel { startSentinelMonitor(profile: profile, password: password) }
         } catch {
             self.redis = nil
             self.bull = nil
             connectionState = .disconnected(error.localizedDescription)
+            // Auto-reconnect even on the first failed connect, unless the user
+            // explicitly closed the app or there's no profile to retry against.
+            if activeProfile != nil {
+                scheduleReconnect(after: error)
+            }
+        }
+    }
+
+    /// Health probe: PING every 4s. On failure, treat as disconnected and
+    /// kick off the reconnect loop.
+    private func startHealthCheck() {
+        healthCheckTask?.cancel()
+        healthCheckTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard let self = self else { return }
+                let runner = await MainActor.run { self.redis }
+                guard let runner = runner else { return }
+                do {
+                    _ = try await runner.send("PING", [])
+                } catch {
+                    await MainActor.run { self.handleConnectionLoss(reason: error.localizedDescription) }
+                    return
+                }
+            }
+        }
+    }
+
+    /// Called by health check or by any command that finds the socket dead.
+    private func handleConnectionLoss(reason: String) {
+        guard case .connected = connectionState else { return }
+        queuePollTask?.cancel(); queuePollTask = nil
+        jobPollTask?.cancel(); jobPollTask = nil
+        healthCheckTask?.cancel(); healthCheckTask = nil
+        sentinelMonitorTask?.cancel(); sentinelMonitorTask = nil
+        Task { await redis?.disconnect() }
+        redis = nil
+        bull = nil
+        scheduleReconnect(after: nil, message: "Lost connection: \(reason)")
+    }
+
+    private func scheduleReconnect(after error: Error? = nil, message: String? = nil) {
+        guard activeProfile != nil else { return }
+        reconnectTask?.cancel()
+        if let m = message { showToast(m, isError: true) }
+
+        reconnectTask = Task { [weak self] in
+            guard let self = self else { return }
+            for (attempt, seconds) in await MainActor.run(body: { self.reconnectBackoff.enumerated().map { ($0.offset + 1, $0.element) } }) {
+                if Task.isCancelled { return }
+                // Countdown so the UI shows "reconnecting in 3s"
+                for remaining in stride(from: seconds, through: 1, by: -1) {
+                    if Task.isCancelled { return }
+                    await MainActor.run {
+                        self.connectionState = .reconnecting(retryIn: remaining, attempt: attempt)
+                    }
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+                if Task.isCancelled { return }
+                // Try once
+                await self.connect(suppressAutoRetry: true)
+                let connected = await MainActor.run { self.connectionState == .connected }
+                if connected { return }
+            }
+            // Backoff exhausted — leave in disconnected with a final message
+            await MainActor.run {
+                if case .reconnecting = self.connectionState {
+                    self.connectionState = .disconnected("Giving up after \(self.reconnectBackoff.count) attempts.")
+                }
+            }
+        }
+    }
+
+    /// Periodically ask sentinels for the current master; force a reconnect if
+    /// it differs from the address we're currently using.
+    private func startSentinelMonitor(profile: RedisProfile, password: String?) {
+        sentinelMonitorTask?.cancel()
+        let hosts = profile.sentinelHosts.compactMap { HostPort.parse($0, fallback: 26379) }
+        guard !hosts.isEmpty else { return }
+        let masterName = profile.sentinelMasterName
+
+        sentinelMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)  // 30s
+                guard let self = self else { return }
+                guard let runner = await MainActor.run(body: { self.redis }) else { return }
+                // Find current master across the configured sentinels.
+                var currentMaster: (String, UInt16)?
+                for sentinel in hosts {
+                    let probe = RedisClient(
+                        host: sentinel.host, port: sentinel.port, tls: false,
+                        username: nil, password: password, database: 0
+                    )
+                    do {
+                        try await probe.connect()
+                        let reply = try await probe.send("SENTINEL", ["get-master-addr-by-name", masterName])
+                        await probe.disconnect()
+                        if case .array(let arr?) = reply, arr.count == 2,
+                           let h = arr[0].stringValue, let p = arr[1].stringValue.flatMap({ UInt16($0) }) {
+                            currentMaster = (h, p)
+                            break
+                        }
+                    } catch {
+                        await probe.disconnect()
+                        continue
+                    }
+                }
+                guard let resolved = currentMaster else { continue }
+                // Compare to what RedisClient resolved at connect time
+                if let client = runner as? RedisClient {
+                    let knownHost = await client.resolvedHost
+                    let knownPort = await client.resolvedPort
+                    if knownHost != resolved.0 || knownPort != resolved.1 {
+                        await MainActor.run {
+                            self.showToast("Sentinel reports new master \(resolved.0):\(resolved.1) — reconnecting", isError: false)
+                            self.handleConnectionLoss(reason: "Sentinel failover")
+                        }
+                        return
+                    }
+                }
+            }
         }
     }
 
     func disconnect() async {
+        reconnectTask?.cancel(); reconnectTask = nil
+        healthCheckTask?.cancel(); healthCheckTask = nil
+        sentinelMonitorTask?.cancel(); sentinelMonitorTask = nil
         queuePollTask?.cancel(); queuePollTask = nil
         jobPollTask?.cancel(); jobPollTask = nil
         await redis?.disconnect()
@@ -217,20 +407,20 @@ final class AppState {
         guard let bull = bull else { return }
         do {
             var found = try await bull.discoverQueues()
-            // hydrate counts in parallel-ish (sequential pipelines, but fast)
             for i in 0..<found.count {
-                if let (c, paused) = try? await bull.counts(for: found[i].name) {
+                if let (c, paused, stalled) = try? await bull.counts(for: found[i].name) {
                     found[i].counts = c
                     found[i].isPaused = paused
+                    found[i].stalledCount = stalled
                 }
             }
             self.queues = found
-            // Re-select the same queue if still present
             if let sel = selectedQueue, let updated = found.first(where: { $0.id == sel.id }) {
                 self.selectedQueue = updated
             } else if let first = found.first, selectedQueue == nil {
                 await selectQueue(first)
             }
+            recordSamplesForChart()
         } catch {
             showToast(error.localizedDescription, isError: true)
         }
@@ -257,6 +447,8 @@ final class AppState {
         switch mode {
         case .jobs: await refreshJobs()
         case .schedulers: await refreshSchedulers()
+        case .workers: await refreshWorkers()
+        case .metrics: break // chart reads MetricsStore directly
         }
     }
 
@@ -431,7 +623,8 @@ final class AppState {
         queuePollTask?.cancel()
         queuePollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 5_000_000_000) // 5s
+                let s = await MainActor.run { Settings.shared.queuePollSeconds }
+                try? await Task.sleep(nanoseconds: UInt64(s) * 1_000_000_000)
                 await self?.refreshQueueCounts()
             }
         }
@@ -440,28 +633,123 @@ final class AppState {
     private func refreshQueueCounts() async {
         guard let bull = bull, !queues.isEmpty else { return }
         for i in 0..<queues.count {
-            if let (c, paused) = try? await bull.counts(for: queues[i].name) {
+            if let (c, paused, stalled) = try? await bull.counts(for: queues[i].name) {
                 queues[i].counts = c
                 queues[i].isPaused = paused
+                queues[i].stalledCount = stalled
                 if selectedQueue?.id == queues[i].id {
                     selectedQueue = queues[i]
                 }
             }
         }
+        recordSamplesForChart()
     }
 
     private func startJobPolling() {
         jobPollTask?.cancel()
         jobPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 4_000_000_000) // 4s
+                let s = await MainActor.run { Settings.shared.jobPollSeconds }
+                try? await Task.sleep(nanoseconds: UInt64(s) * 1_000_000_000)
                 guard let self = self else { return }
-                // Only auto-refresh job list when we're at the top of the page
                 if await MainActor.run(body: { self.jobOffset == 0 && self.selectedJobID == nil }) {
                     await self.refreshJobs()
                 }
             }
         }
+    }
+
+    // MARK: Add Job
+
+    func addJob(queueName: String, name: String, data: String, priority: Int, delayMs: Int64, attempts: Int) async {
+        guard let bull = bull else { return }
+        do {
+            let id = try await bull.addJob(
+                queue: queueName, name: name, data: data,
+                priority: priority, delayMs: delayMs, attempts: attempts
+            )
+            showToast("Added #\(id) to \(queueName)")
+            await refreshQueues()
+        } catch {
+            showToast(error.localizedDescription, isError: true)
+        }
+    }
+
+    // MARK: Metrics
+
+    func recordSamplesForChart() {
+        let now = Date()
+        for q in queues {
+            let sample = QueueSample(
+                timestamp: now,
+                counts: q.counts,
+                stalled: q.stalledCount,
+                workers: q.workerCount
+            )
+            MetricsStore.shared.record(queueID: q.id, sample: sample)
+        }
+    }
+
+    // MARK: Workers
+
+    func refreshWorkers() async {
+        guard let bull = bull, let q = selectedQueue else { return }
+        workersLoading = true
+        defer { workersLoading = false }
+        do {
+            workers = try await bull.listWorkers(queue: q.name)
+        } catch {
+            showToast(error.localizedDescription, isError: true)
+        }
+    }
+
+    // MARK: Bulk actions
+
+    func toggleJobSelection(_ id: String) {
+        if selectedJobIDs.contains(id) { selectedJobIDs.remove(id) }
+        else { selectedJobIDs.insert(id) }
+    }
+
+    func clearJobSelection() { selectedJobIDs.removeAll() }
+
+    func selectAllVisibleJobs() {
+        selectedJobIDs = Set(jobs.map { $0.id })
+    }
+
+    func bulkRetry() async {
+        guard let bull = bull, let q = selectedQueue, !selectedJobIDs.isEmpty else { return }
+        var ok = 0
+        let ids = Array(selectedJobIDs)
+        for id in ids {
+            do { try await bull.retryFailed(queue: q.name, id: id); ok += 1 } catch {}
+        }
+        showToast("Retried \(ok)/\(ids.count)")
+        selectedJobIDs.removeAll()
+        await refreshJobs()
+    }
+
+    func bulkPromote() async {
+        guard let bull = bull, let q = selectedQueue, !selectedJobIDs.isEmpty else { return }
+        var ok = 0
+        let ids = Array(selectedJobIDs)
+        for id in ids {
+            do { try await bull.promoteDelayed(queue: q.name, id: id); ok += 1 } catch {}
+        }
+        showToast("Promoted \(ok)/\(ids.count)")
+        selectedJobIDs.removeAll()
+        await refreshJobs()
+    }
+
+    func bulkRemove() async {
+        guard let bull = bull, let q = selectedQueue, !selectedJobIDs.isEmpty else { return }
+        var ok = 0
+        let ids = Array(selectedJobIDs)
+        for id in ids {
+            do { try await bull.removeJob(queue: q.name, id: id, force: true); ok += 1 } catch {}
+        }
+        showToast("Removed \(ok)/\(ids.count)")
+        selectedJobIDs.removeAll()
+        await refreshJobs()
     }
 
     // MARK: Toast
@@ -493,10 +781,39 @@ struct PasswordPrompt: Identifiable {
     let profile: RedisProfile
 }
 
+// MARK: - Notification names (driven by main-menu shortcuts)
+
+extension Notification.Name {
+    static let matadorRefresh      = Notification.Name("matador.refresh")
+    static let matadorTogglePause  = Notification.Name("matador.togglePause")
+    static let matadorViewMode     = Notification.Name("matador.viewMode")
+    static let matadorJobState     = Notification.Name("matador.jobState")
+    static let matadorRetryJob     = Notification.Name("matador.retryJob")
+    static let matadorPromoteJob   = Notification.Name("matador.promoteJob")
+    static let matadorRemoveJob    = Notification.Name("matador.removeJob")
+    static let matadorAddJob       = Notification.Name("matador.addJob")
+    static let matadorSettings     = Notification.Name("matador.settings")
+}
+
 enum QueueViewMode: String, Hashable, CaseIterable, Identifiable {
-    case jobs, schedulers
+    case jobs, schedulers, workers, metrics
     var id: String { rawValue }
-    var label: String { self == .jobs ? "Jobs" : "Schedulers" }
+    var label: String {
+        switch self {
+        case .jobs: return "Jobs"
+        case .schedulers: return "Schedulers"
+        case .workers: return "Workers"
+        case .metrics: return "Metrics"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .jobs: return "list.bullet"
+        case .schedulers: return "calendar"
+        case .workers: return "cpu"
+        case .metrics: return "chart.xyaxis.line"
+        }
+    }
 }
 
 struct JobChildren: Equatable {

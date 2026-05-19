@@ -84,7 +84,7 @@ struct SidebarView: View {
     private var connectionDotColor: Color {
         switch state.connectionState {
         case .connected: return .green
-        case .connecting: return .yellow
+        case .connecting, .reconnecting: return .yellow
         case .disconnected: return .red
         }
     }

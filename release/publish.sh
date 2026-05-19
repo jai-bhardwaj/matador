@@ -73,13 +73,30 @@ CONSTANTS="$ROOT_DIR/Sources/Matador/AppConstants.swift"
 sed -i '' "s/static let version = \".*\"/static let version = \"${VERSION}\"/" "$CONSTANTS"
 ok "AppConstants.swift updated"
 
-step "Compiling release binary"
+step "Compiling release binary (universal arm64 + x86_64)"
 cd "$ROOT_DIR"
-swift build -c release
-ARCH="$(uname -m)"
-BINARY="$ROOT_DIR/.build/${ARCH}-apple-macosx/release/Matador"
-[[ -x "$BINARY" ]] || fail "Built binary not found at $BINARY"
-ok "Compiled: $BINARY"
+swift build -c release --arch arm64
+ARM_BINARY="$ROOT_DIR/.build/arm64-apple-macosx/release/Matador"
+[[ -x "$ARM_BINARY" ]] || fail "arm64 binary not at $ARM_BINARY"
+ok "arm64 compiled"
+
+if swift build -c release --arch x86_64 2>/dev/null; then
+    X86_BINARY="$ROOT_DIR/.build/x86_64-apple-macosx/release/Matador"
+    if [[ -x "$X86_BINARY" ]]; then
+        ok "x86_64 compiled"
+        UNIVERSAL="$ROOT_DIR/.build/Matador-universal"
+        lipo -create "$ARM_BINARY" "$X86_BINARY" -output "$UNIVERSAL"
+        BINARY="$UNIVERSAL"
+        ok "lipo merged into universal binary"
+        lipo -archs "$BINARY"
+    else
+        printf "    ⚠ x86_64 binary not produced; falling back to arm64-only\n"
+        BINARY="$ARM_BINARY"
+    fi
+else
+    printf "    ⚠ x86_64 build failed (Rosetta SDK may not be installed); falling back to arm64-only\n"
+    BINARY="$ARM_BINARY"
+fi
 
 step "Building .app bundle"
 rm -rf "$APP_BUNDLE"
