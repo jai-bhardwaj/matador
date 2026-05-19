@@ -73,22 +73,30 @@ struct SchedulerRow: View {
                 HStack(spacing: 6) {
                     Text(scheduler.name ?? "(unnamed)")
                         .font(.system(.callout).weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     Text("#\(scheduler.id)")
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 HStack(spacing: 8) {
                     Text(scheduler.cadence)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     if let tz = scheduler.tz, !tz.isEmpty {
                         Text(tz)
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                 }
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
             if let nextRun = scheduler.nextRun {
                 VStack(alignment: .trailing, spacing: 2) {
                     Text("next")
@@ -97,6 +105,8 @@ struct SchedulerRow: View {
                     Text(nextRun.formatted(date: .abbreviated, time: .shortened))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
         }

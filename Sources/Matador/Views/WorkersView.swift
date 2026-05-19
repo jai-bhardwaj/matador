@@ -63,19 +63,27 @@ struct WorkerRow: View {
                     Label("id \(worker.id)", systemImage: "number")
                         .font(Theme.monoTiny)
                         .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                     Label(worker.addr, systemImage: "network")
                         .font(Theme.monoTiny)
                         .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 2) {
                 Text("idle \(worker.idleSeconds)s")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(worker.idleSeconds < 30 ? .green : .secondary)
+                    .lineLimit(1)
+                    .fixedSize()
                 Text("up \(formatDuration(worker.age))")
                     .font(Theme.monoTiny)
                     .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .fixedSize()
             }
         }
         .padding(.horizontal, 12)

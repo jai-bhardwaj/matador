@@ -55,7 +55,9 @@ struct JobListView: View {
                 Text("\(state.selectedJobIDs.count) selected")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(Theme.brand)
-                Spacer()
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 0)
                 if state.selectedState == .failed {
                     Button {
                         state.confirmAction = ConfirmAction(
@@ -108,16 +110,20 @@ struct JobListView: View {
                         .font(.system(size: 8))
                         .foregroundStyle(q.isPaused ? .yellow : .green)
                 }
+                .fixedSize()
                 VStack(alignment: .leading, spacing: 2) {
                     Text(q.name)
                         .font(.system(.title3, design: .rounded).weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     if q.isPaused {
                         Text("paused")
                             .font(Theme.monoTiny)
                             .foregroundStyle(.yellow)
                     }
                 }
-                Spacer()
+                .layoutPriority(0)
+                Spacer(minLength: 8)
                 Button {
                     Task { await state.togglePause() }
                 } label: {
@@ -165,43 +171,82 @@ struct JobListView: View {
     // MARK: Mode switcher
 
     private var modeSwitcher: some View {
-        HStack(spacing: 6) {
-            ForEach(QueueViewMode.allCases) { m in
-                Button {
-                    Task { await state.setViewMode(m) }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: m.icon)
-                            .font(.caption2)
-                        Text(m.label)
-                            .font(.system(.callout, design: .rounded).weight(.medium))
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(
-                        state.queueViewMode == m ? Theme.brandSoft : Color.clear,
-                        in: Capsule()
-                    )
-                    .foregroundStyle(state.queueViewMode == m ? Theme.brand : .secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer()
-            // Inline throughput sparkline if we have data
-            if let qID = state.selectedQueue?.id {
-                let rates = MetricsStore.shared.rates(for: qID)
-                if rates.count > 1 {
-                    HStack(spacing: 6) {
-                        Text("throughput")
-                            .font(Theme.monoTiny)
-                            .foregroundStyle(.tertiary)
-                        ThroughputSparkline(rates: rates)
-                    }
-                }
-            }
+        // ViewThatFits picks the first layout that doesn't truncate. At wide
+        // widths we get pills with full labels + an inline sparkline; at
+        // narrow widths we collapse to icon-only pills.
+        ViewThatFits(in: .horizontal) {
+            wideSwitcher
+            mediumSwitcher
+            compactSwitcher
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+
+    private var wideSwitcher: some View {
+        HStack(spacing: 6) {
+            ForEach(QueueViewMode.allCases) { m in modePill(m, compact: false) }
+            Spacer(minLength: 8)
+            sparkline
+        }
+    }
+
+    private var mediumSwitcher: some View {
+        HStack(spacing: 6) {
+            ForEach(QueueViewMode.allCases) { m in modePill(m, compact: false) }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var compactSwitcher: some View {
+        HStack(spacing: 4) {
+            ForEach(QueueViewMode.allCases) { m in modePill(m, compact: true) }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func modePill(_ m: QueueViewMode, compact: Bool) -> some View {
+        Button {
+            Task { await state.setViewMode(m) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: m.icon)
+                    .font(.caption2)
+                if !compact {
+                    Text(m.label)
+                        .font(.system(.callout, design: .rounded).weight(.medium))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .padding(.horizontal, compact ? 8 : 12)
+            .padding(.vertical, 6)
+            .background(
+                state.queueViewMode == m ? Theme.brandSoft : Color.clear,
+                in: Capsule()
+            )
+            .foregroundStyle(state.queueViewMode == m ? Theme.brand : .secondary)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(m.label)
+    }
+
+    @ViewBuilder
+    private var sparkline: some View {
+        if let qID = state.selectedQueue?.id {
+            let rates = MetricsStore.shared.rates(for: qID)
+            if rates.count > 1 {
+                HStack(spacing: 6) {
+                    Text("throughput")
+                        .font(Theme.monoTiny)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                    ThroughputSparkline(rates: rates)
+                }
+            }
+        }
     }
 
     // MARK: State tabs
@@ -331,6 +376,8 @@ struct StateTab: View {
                 .foregroundStyle(selected ? state.accent : (count > 0 ? Color.primary.opacity(0.7) : Color.secondary))
             Text(state.label)
                 .font(.system(.callout, design: .rounded).weight(selected ? .semibold : .regular))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             if count > 0 {
                 Text("\(count)")
                     .font(.system(.caption, design: .monospaced).monospacedDigit())
@@ -343,6 +390,7 @@ struct StateTab: View {
                     )
             }
         }
+        .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .foregroundStyle(selected ? state.accent : .primary)

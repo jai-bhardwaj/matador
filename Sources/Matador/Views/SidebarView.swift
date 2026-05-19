@@ -58,20 +58,23 @@ struct SidebarView: View {
                             .fill(connectionDotColor)
                             .frame(width: 9, height: 9)
                     }
+                    .fixedSize()
                     VStack(alignment: .leading, spacing: 1) {
                         Text(state.activeProfile?.name ?? "No profile")
                             .font(.system(.callout, design: .rounded).weight(.semibold))
                             .lineLimit(1)
+                            .truncationMode(.tail)
                         Text(state.activeProfile?.summary ?? "")
                             .font(Theme.monoTiny)
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
-                    Spacer(minLength: 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                        .fixedSize()
                 }
             }
             .menuStyle(.borderlessButton)
@@ -93,11 +96,13 @@ struct SidebarView: View {
 
     private var queueList: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 6) {
                 Text("Queues")
                     .font(Theme.sectionLabel)
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 4)
                 if !state.queues.isEmpty {
                     Text("\(state.queues.count)")
                         .font(.caption.monospacedDigit())
@@ -105,6 +110,7 @@ struct SidebarView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
                         .background(Color.secondary.opacity(0.10), in: Capsule())
+                        .fixedSize()
                 }
                 Button {
                     Task { await state.refreshQueues() }
@@ -114,6 +120,7 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Refresh queues")
+                .fixedSize()
             }
             .padding(.horizontal, 14)
             .padding(.top, 12)
@@ -191,18 +198,20 @@ struct QueueRow: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(queue.isPaused ? .yellow : Theme.brand)
             }
+            .fixedSize()
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(queue.name)
                     .font(.system(.callout, design: .rounded).weight(.medium))
                     .lineLimit(1)
+                    .truncationMode(.tail)
                 HStack(spacing: 4) {
                     QueueChip(state: .waiting, n: queue.counts[.waiting] ?? 0)
                     QueueChip(state: .active, n: queue.counts[.active] ?? 0)
                     QueueChip(state: .failed, n: queue.counts[.failed] ?? 0)
                 }
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)

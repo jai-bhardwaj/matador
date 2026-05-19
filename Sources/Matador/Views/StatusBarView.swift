@@ -4,6 +4,18 @@ struct StatusBarView: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            wideLayout
+            mediumLayout
+            compactLayout
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .background(.ultraThinMaterial)
+        .overlay(Divider().opacity(0.5), alignment: .top)
+    }
+
+    private var wideLayout: some View {
         HStack(spacing: 14) {
             connectionPill
             Spacer()
@@ -11,14 +23,35 @@ struct StatusBarView: View {
                 queueStats(q)
             }
             Spacer()
-            Text("v\(AppConstants.version)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
+            versionLabel
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 7)
-        .background(.ultraThinMaterial)
-        .overlay(Divider().opacity(0.5), alignment: .top)
+    }
+
+    private var mediumLayout: some View {
+        HStack(spacing: 10) {
+            connectionPill
+            Spacer(minLength: 8)
+            if let q = state.selectedQueue, state.connectionState == .connected {
+                queueStats(q)
+            }
+            versionLabel
+        }
+    }
+
+    private var compactLayout: some View {
+        HStack(spacing: 8) {
+            connectionPill
+            Spacer(minLength: 4)
+            versionLabel
+        }
+    }
+
+    private var versionLabel: some View {
+        Text("v\(AppConstants.version)")
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+            .fixedSize()
     }
 
     private var connectionPill: some View {
@@ -37,26 +70,35 @@ struct StatusBarView: View {
                     Text(p.summary)
                         .font(Theme.monoTiny)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             case .connecting:
                 Text("connecting…")
                     .font(Theme.monoTiny)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             case .reconnecting(let s, let attempt):
-                Text("reconnecting in \(s)s (attempt \(attempt))")
+                Text("reconnecting in \(s)s (#\(attempt))")
                     .font(Theme.monoTiny)
                     .foregroundStyle(.yellow)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Button("Retry now") { Task { await state.connect() } }
                     .buttonStyle(.borderless)
                     .controlSize(.mini)
+                    .fixedSize()
             case .disconnected(let msg):
                 Text(msg ?? "disconnected")
                     .font(Theme.monoTiny)
                     .foregroundStyle(.red)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                 Button("Retry") { Task { await state.connect() } }
                     .buttonStyle(.borderless)
                     .controlSize(.mini)
+                    .fixedSize()
             }
         }
     }

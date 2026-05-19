@@ -53,16 +53,16 @@ struct MetricsView: View {
 
     private var currentStatsCard: some View {
         let latest = samples.last
-        return Section {
-            HStack(spacing: 12) {
-                ForEach(JobState.allCases) { s in
-                    StatTile(
-                        label: s.label,
-                        value: latest?.count(s) ?? 0,
-                        color: s.accent,
-                        icon: s.systemIcon
-                    )
-                }
+        // Adaptive grid: tiles flow into 2-4 columns depending on width.
+        let columns = [GridItem(.adaptive(minimum: 130), spacing: 10, alignment: .top)]
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+            ForEach(JobState.allCases) { s in
+                StatTile(
+                    label: s.label,
+                    value: latest?.count(s) ?? 0,
+                    color: s.accent,
+                    icon: s.systemIcon
+                )
             }
         }
     }
@@ -209,12 +209,17 @@ struct StatTile: View {
                     .font(.caption2.weight(.medium))
                     .tracking(0.3)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .truncationMode(.tail)
             }
             Text("\(value)")
                 .font(.system(.title2, design: .rounded).weight(.semibold).monospacedDigit())
                 .foregroundStyle(value > 0 ? color : .secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
