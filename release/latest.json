@@ -1,7 +1,7 @@
 {
-  "version": "0.2.8",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.8/Matador-0.2.8.dmg",
-  "notes": "Profile editor upgrade: (1) TLS now has 'Auto' mode that probes TLS first then falls back to plain TCP — same UX as RedisInsight, no more 'TLS handshake failed' surprises. (2) Paste a redis:// or rediss:// connection URL at the top of the profile editor and every field auto-fills. (3) New 'Test Connection' button runs the real connect path + BullMQ queue scan against the form values without saving, so you can iterate on settings before committing.",
+  "version": "0.2.9",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.9/Matador-0.2.9.dmg",
+  "notes": "Fix: TLS=Auto was timing out against plain-TCP Redis (port-forwards, local dev). Previous probe order was [TLS, plain] with a fallback heuristic that didn't match the 'timed out' that TLS-against-plain-Redis produces. Now it's plain-first (matches the common case + dodges the 10s TLS-probe-against-plain hang) with a direction-aware fallback heuristic: reset/eof/unexpected-reply triggers TLS retry; refused/NOAUTH/wrongpass propagate immediately.",
   "minOS": "14.0",
   "date": "2026-05-20"
 }
