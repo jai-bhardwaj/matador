@@ -75,15 +75,27 @@ actor RedisClient {
 
         try await openConnection(host: host, port: port)
         startReceiveLoop()
-        try await authenticate()
-
-        if database != 0 {
-            let r = try await send("SELECT", [database])
-            if case .error(let m) = r { throw RedisError.commandFailed(m) }
+        do {
+            try await authenticate()
+            if database != 0 {
+                let r = try await send("SELECT", [database])
+                if case .error(let m) = r { throw RedisError.commandFailed(m) }
+            }
+            let pong = try await send("PING")
+            if case .error(let m) = pong { throw RedisError.commandFailed(m) }
+        } catch {
+            // If the TCP handshake succeeded but the very first command got us
+            // a "not connected" error, the server closed on us before responding.
+            // That's almost always a wedged proxy / port-forward / firewall.
+            if case RedisError.notConnected = error {
+                throw RedisError.connectionFailed(
+                    "TCP connected to \(host):\(port) but the server closed the socket before responding. " +
+                    "Common causes: kubectl port-forward is wedged (restart it), or a firewall / Little Snitch / VPN is dropping the response. " +
+                    "Verify with: redis-cli -h \(host) -p \(port) ping"
+                )
+            }
+            throw error
         }
-
-        let pong = try await send("PING")
-        if case .error(let m) = pong { throw RedisError.commandFailed(m) }
     }
 
     /// Resolve the actual host/port to dial. For Sentinel, this opens a short-
