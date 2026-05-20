@@ -1,7 +1,7 @@
 {
-  "version": "0.2.9",
-  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.9/Matador-0.2.9.dmg",
-  "notes": "Fix: TLS=Auto was timing out against plain-TCP Redis (port-forwards, local dev). Previous probe order was [TLS, plain] with a fallback heuristic that didn't match the 'timed out' that TLS-against-plain-Redis produces. Now it's plain-first (matches the common case + dodges the 10s TLS-probe-against-plain hang) with a direction-aware fallback heuristic: reset/eof/unexpected-reply triggers TLS retry; refused/NOAUTH/wrongpass propagate immediately.",
+  "version": "0.2.10",
+  "url": "https://github.com/jai-bhardwaj/matador/releases/download/v0.2.10/Matador-0.2.10.dmg",
+  "notes": "Better error message when TCP succeeds but the server closes the socket before responding to our first command — this was previously surfaced as the cryptic 'Redis: not connected' but the actual cause is almost always a wedged kubectl port-forward or a firewall dropping return packets. Error now spells that out + suggests redis-cli verification.",
   "minOS": "14.0",
   "date": "2026-05-20"
 }
