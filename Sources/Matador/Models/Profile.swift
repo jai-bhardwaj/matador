@@ -31,7 +31,7 @@ enum TLSMode: String, Codable, CaseIterable, Hashable {
         switch self {
         case .off: return "Plain TCP (redis://)"
         case .on: return "Always TLS (rediss://)"
-        case .auto: return "Try TLS, fall back to plain on handshake failure"
+        case .auto: return "Try plain TCP first, fall back to TLS if the server appears TLS-only"
         }
     }
 }

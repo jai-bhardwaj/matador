@@ -242,12 +242,14 @@ struct ProfileEditSheet: View {
 
     /// Build a runner against the given profile, attempt to connect, run a
     /// queue discovery, then tear down. Returns a user-readable result.
+    /// Auto mode mirrors AppState: plain TCP first, fall back to TLS only if
+    /// the server hangs up in a TLS-only-shaped way.
     private static func probe(profile: RedisProfile, password: String) async -> TestResult {
         let tlsOrder: [Bool]
         switch profile.tlsMode {
         case .off:  tlsOrder = [false]
         case .on:   tlsOrder = [true]
-        case .auto: tlsOrder = [true, false]
+        case .auto: tlsOrder = [false, true]
         }
 
         var lastError = "unknown"
@@ -264,8 +266,13 @@ struct ProfileEditSheet: View {
             } catch {
                 lastError = error.localizedDescription
                 let m = lastError.lowercased()
-                let looksTLSish = m.contains("tls") || m.contains("handshake") || m.contains("ssl") || m.contains("reset")
-                if looksTLSish && hasFallback { continue }
+                let schemeMismatch: Bool
+                if useTLS {
+                    schemeMismatch = m.contains("tls") || m.contains("handshake") || m.contains("ssl") || m.contains("certificate") || m.contains("timed out")
+                } else {
+                    schemeMismatch = m.contains("reset") || m.contains("eof") || m.contains("unexpected reply") || m.contains("shutdown")
+                }
+                if schemeMismatch && hasFallback { continue }
                 return .failure(reason: lastError)
             }
         }

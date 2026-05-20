@@ -281,9 +281,11 @@ final class AppState {
     }
 
     /// Try opening a runner with each TLS setting in order. Only fall through
-    /// to the next attempt if the error looks TLS-related; other errors (auth,
-    /// connection refused, etc.) propagate immediately because retrying with a
-    /// different TLS setting won't fix them.
+    /// to the next attempt when the error suggests the scheme is wrong — i.e.,
+    /// the server hung up on us in a way consistent with a TLS-only or plain-only
+    /// expectation. Errors like `connection refused`, `NOAUTH`, or `timed out`
+    /// mean the network/auth is broken; retrying with a different TLS setting
+    /// won't fix them and would just waste another timeout cycle.
     private func openWithTLSFallback(
         tlsOrder: [Bool],
         open: (Bool) async throws -> RedisCommandRunner
@@ -294,17 +296,40 @@ final class AppState {
                 return try await open(useTLS)
             } catch {
                 lastError = error
-                let msg = error.localizedDescription.lowercased()
-                let looksTLSish = msg.contains("tls") || msg.contains("handshake")
-                                  || msg.contains("ssl") || msg.contains("reset")
-                                  || msg.contains("certificate")
                 let hasFallback = idx + 1 < tlsOrder.count
-                if !looksTLSish || !hasFallback {
+                if !hasFallback || !shouldFallbackToOtherTLSMode(error: error, triedTLS: useTLS) {
                     throw error
                 }
+                // else: silently try the next mode
             }
         }
         throw lastError ?? RedisError.connectionFailed("no TLS modes attempted")
+    }
+
+    /// Heuristic: was this error caused by us using the wrong TLS setting?
+    /// - Plain → TLS-only server: typically `connection reset`, `eof`, or
+    ///   `unexpected reply` (the server closes the socket the moment we send
+    ///   non-TLS bytes).
+    /// - TLS → plain server: typically `tls`/`handshake`/`ssl`/`certificate`
+    ///   error, or a hard timeout (Redis ignores TLS ClientHello bytes).
+    private func shouldFallbackToOtherTLSMode(error: Error, triedTLS: Bool) -> Bool {
+        let msg = error.localizedDescription.lowercased()
+        if triedTLS {
+            // We tried TLS and it failed. Was it TLS-shaped?
+            if msg.contains("tls") || msg.contains("handshake")
+                || msg.contains("ssl") || msg.contains("certificate")
+                || msg.contains("timed out") {
+                return true
+            }
+            return false
+        } else {
+            // We tried plain TCP. Did the server close on us in a TLS-only way?
+            if msg.contains("reset") || msg.contains("eof")
+                || msg.contains("unexpected reply") || msg.contains("shutdown") {
+                return true
+            }
+            return false
+        }
     }
 
     private func actuallyConnect(profile: RedisProfile, password: String?, generation: Int) async {
@@ -314,7 +339,10 @@ final class AppState {
             switch profile.tlsMode {
             case .off:  tlsOrder = [false]
             case .on:   tlsOrder = [true]
-            case .auto: tlsOrder = [true, false]   // try TLS first, fall back
+            // Plain first — port-forwards and local dev are almost always plain TCP,
+            // and TLS-against-plain typically hangs until the 10s timeout, whereas
+            // plain-against-TLS-only servers fail with `reset` in <100ms.
+            case .auto: tlsOrder = [false, true]
             }
 
             switch profile.mode {
